@@ -6,7 +6,7 @@ metadata:
   name: processor
   labels:
     app: processor
-    component: pipeline
+    component: mini-scan
 spec:
   replicas: 1
   selector:
@@ -16,7 +16,7 @@ spec:
     metadata:
       labels:
         app: processor
-        component: pipeline
+        component: mini-scan
       # Standard Prometheus annotations for service-discovery-based scraping.
       # Even though we use static config here, including these makes the
       # manifest production-ready for clusters running the Prometheus Operator.
@@ -62,11 +62,11 @@ spec:
               mountPath: /data
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
+              cpu: 200m
+              memory: 256Mi
             limits:
               cpu: 500m
-              memory: 256Mi
+              memory: 512Mi
       volumes:
         # emptyDir is appropriate for local development — data does not survive
         # pod restarts, but the scanner continuously generates new scan results.
@@ -81,7 +81,7 @@ metadata:
   name: processor
   labels:
     app: processor
-    component: pipeline
+    component: mini-scan
 spec:
   selector:
     app: processor

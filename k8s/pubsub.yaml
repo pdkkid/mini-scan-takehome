@@ -37,23 +37,23 @@ spec:
             httpGet:
               path: /
               port: 8085
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 5
             timeoutSeconds: 3
           livenessProbe:
             httpGet:
               path: /
               port: 8085
-            initialDelaySeconds: 10
+            initialDelaySeconds: 15
             periodSeconds: 10
             timeoutSeconds: 5
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
+              cpu: 400m
+              memory: 1024Mi
             limits:
-              cpu: 500m
-              memory: 256Mi
+              cpu: 600m
+              memory: 2056Mi
 ---
 apiVersion: v1
 kind: Service

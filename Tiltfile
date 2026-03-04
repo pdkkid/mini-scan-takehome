@@ -4,8 +4,8 @@
 # ── Build custom images from existing Dockerfiles ──────────────────────────
 # Tilt watches the build context for file changes and automatically rebuilds
 # the affected image + redeploys the pod.
-docker_build('processor', '.', dockerfile='cmd/processor/Dockerfile')
-docker_build('scanner', '.', dockerfile='cmd/scanner/Dockerfile')
+docker_build('processor', '.', dockerfile='cmd/processor/Dockerfile', only=['./cmd/processor/', './pkg/', './go.mod', './go.sum'])
+docker_build('scanner', '.', dockerfile='cmd/scanner/Dockerfile', only=['./cmd/scanner/', './pkg/', './go.mod', './go.sum'])
 
 # ── Generate dashboard ConfigMap from existing JSON ────────────────────────
 # This avoids duplicating the 200+ line dashboard JSON in a YAML manifest.
@@ -41,13 +41,13 @@ k8s_resource(
 k8s_resource(
     'scanner',
     resource_deps=['pubsub-init'],
-    labels=['pipeline'],
+    labels=['mini-scan'],
 )
 k8s_resource(
     'processor',
     port_forwards='8080:8080',
     resource_deps=['pubsub-init'],
-    labels=['pipeline'],
+    labels=['mini-scan'],
 )
 
 # Observability: prometheus and grafana can start independently.

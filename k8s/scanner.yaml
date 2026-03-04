@@ -8,7 +8,7 @@ metadata:
   name: scanner
   labels:
     app: scanner
-    component: pipeline
+    component: mini-scan
 spec:
   replicas: 1
   selector:
@@ -18,7 +18,7 @@ spec:
     metadata:
       labels:
         app: scanner
-        component: pipeline
+        component: mini-scan
     spec:
       containers:
         - name: scanner
@@ -30,8 +30,8 @@ spec:
               value: "test-project"
           resources:
             requests:
-              cpu: 50m
-              memory: 64Mi
-            limits:
               cpu: 200m
-              memory: 128Mi
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
