@@ -40,21 +40,40 @@ services:
       context: .
       dockerfile: ./cmd/scanner/Dockerfile
 
+  # PostgreSQL — shared storage backend for the scan processor
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: scans
+      POSTGRES_USER: processor
+      POSTGRES_PASSWORD: processor
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U processor -d scans"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   # Runs the scan result processor
   processor:
     depends_on:
       mk-subscription:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
     environment:
       PUBSUB_EMULATOR_HOST: pubsub:8085
       PUBSUB_PROJECT_ID: test-project
+      POSTGRES_URL: "postgres://processor:processor@postgres:5432/scans?sslmode=disable"
     build:
       context: .
       dockerfile: ./cmd/processor/Dockerfile
+    command: ["/app/processor", "-store", "postgres"]
     ports:
       - "8080:8080"   # /metrics (Prometheus) and /healthz
-    volumes:
-      - scan-data:/data
 
   # Scrapes processor metrics and makes them queryable
   prometheus:
@@ -81,4 +100,4 @@ services:
       - prometheus
 
 volumes:
-  scan-data:
+  pg-data:

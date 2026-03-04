@@ -31,6 +31,20 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: scans
+          POSTGRES_USER: processor
+          POSTGRES_PASSWORD: processor
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U processor -d scans"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -40,6 +54,8 @@ jobs:
           cache: true
 
       - name: Run tests (race detector on)
+        env:
+          POSTGRES_URL: "postgres://processor:processor@localhost:5432/scans?sslmode=disable"
         run: go test -race -coverprofile=coverage.out ./...
 
       - name: Print coverage summary

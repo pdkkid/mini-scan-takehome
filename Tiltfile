@@ -20,6 +20,7 @@ k8s_yaml(local(
 k8s_yaml([
     'k8s/pubsub.yaml',
     'k8s/pubsub-init.yaml',
+    'k8s/postgres.yaml',
     'k8s/scanner.yaml',
     'k8s/processor.yaml',
     'k8s/prometheus.yaml',
@@ -28,14 +29,15 @@ k8s_yaml([
 
 # ── Resource configuration ─────────────────────────────────────────────────
 
-# Infrastructure: the emulator must be ready before the init job creates
-# the topic and subscription.
+# Infrastructure: the emulator and postgres must be ready before dependent
+# services start.
 k8s_resource('pubsub', labels=['infrastructure'])
 k8s_resource(
     'pubsub-init',
     resource_deps=['pubsub'],
     labels=['infrastructure'],
 )
+k8s_resource('postgres', labels=['infrastructure'])
 
 # Pipeline: scanner and processor both require the topic/subscription to exist.
 k8s_resource(
@@ -46,7 +48,7 @@ k8s_resource(
 k8s_resource(
     'processor',
     port_forwards='8080:8080',
-    resource_deps=['pubsub-init'],
+    resource_deps=['pubsub-init', 'postgres'],
     labels=['mini-scan'],
 )
 

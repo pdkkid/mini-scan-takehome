@@ -1,4 +1,4 @@
-# Processor — consumes scan results from Pub/Sub and persists them to SQLite.
+# Processor — consumes scan results from Pub/Sub and persists them to PostgreSQL.
 # Exposes /metrics (Prometheus) and /healthz (readiness + liveness) on port 8080.
 apiVersion: apps/v1
 kind: Deployment
@@ -28,16 +28,21 @@ spec:
       containers:
         - name: processor
           image: processor
+          args:
+            - "-store"
+            - "postgres"
           env:
             - name: PUBSUB_EMULATOR_HOST
               value: "pubsub:8085"
             - name: PUBSUB_PROJECT_ID
               value: "test-project"
+            - name: POSTGRES_URL
+              value: "postgres://processor:processor@postgres:5432/scans?sslmode=disable"
           ports:
             - containerPort: 8080
               name: metrics
               protocol: TCP
-          # Readiness: the processor is ready when both the SQLite store and
+          # Readiness: the processor is ready when both the Postgres store and
           # the Pub/Sub subscription are reachable. /healthz checks both.
           readinessProbe:
             httpGet:
@@ -57,9 +62,6 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 5
-          volumeMounts:
-            - name: data
-              mountPath: /data
           resources:
             requests:
               cpu: 1m
@@ -67,13 +69,6 @@ spec:
             limits:
               cpu: 1m
               memory: 32Mi
-      volumes:
-        # emptyDir is appropriate for local development — data does not survive
-        # pod restarts, but the scanner continuously generates new scan results.
-        # In production, replace with a PersistentVolumeClaim or swap SQLiteStore
-        # for a networked database (Postgres, CockroachDB, etc.).
-        - name: data
-          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

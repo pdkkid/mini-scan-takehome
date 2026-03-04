@@ -62,14 +62,14 @@ Please don’t hesitate to ask any follow-up questions for clarification.
 
 The processor is implemented as a new `cmd/processor` binary. All logic lives in two new packages:
 
-- **`pkg/store`** — a `Store` interface with two implementations: `SQLiteStore` (persistent, used in production) and `MemoryStore` (in-process, used in tests). Adding a new backend requires only implementing the interface.
+- **`pkg/store`** — a `Store` interface with three implementations: `SQLiteStore` (embedded, single-host), `PostgresStore` (networked, multi-replica), and `MemoryStore` (in-process, used in tests). Adding a new backend requires only implementing the interface.
 - **`pkg/processor`** — message parsing, V1/V2 decoding, error classification, and Ack/Nack dispatch.
 
 ### Design Decisions
 
 **Store interface for swappability**
 
-`pkg/store/store.go` defines a `Store` interface with `Upsert` and `Get` methods. The interface is proven by two concrete implementations (`SQLiteStore` and `MemoryStore`) that are verified against an identical behavioral test suite — if both pass, they are safely interchangeable.
+`pkg/store/store.go` defines a `Store` interface with `Upsert` and `Get` methods. The interface is proven by three concrete implementations (`SQLiteStore`, `PostgresStore`, and `MemoryStore`) that are verified against an identical behavioral test suite — if all pass, they are safely interchangeable.
 
 **Atomic out-of-order protection**
 
@@ -105,7 +105,7 @@ When `encoding/json` unmarshals into `scanning.Scan`, the `Data interface{}` fie
 
 **Horizontal scaling**
 
-Multiple processor replicas can consume from the same Pub/Sub subscription — Pub/Sub load-balances automatically. The atomic conditional upsert ensures correctness when two replicas race to write the same `(ip, port, service)`. SQLite is configured with WAL journal mode and a 5-second busy timeout to reduce lock contention on a shared volume. To scale beyond a single host, swap `SQLiteStore` for a networked database — a one-file change.
+Multiple processor replicas can consume from the same Pub/Sub subscription — Pub/Sub load-balances automatically. The atomic conditional upsert ensures correctness when two replicas race to write the same `(ip, port, service)`. The `PostgresStore` backend is the recommended choice for multi-replica deployments — its MVCC concurrency model allows parallel writers without blocking, and connection pooling via `pgxpool` handles high concurrency natively. `SQLiteStore` is still available for single-replica or local development use cases.
 
 **Structured logging**
 
@@ -133,8 +133,10 @@ pkg/store/
   store.go          — Store interface + ScanRecord type
   sqlite.go         — SQLite implementation (WAL, busy timeout, conditional upsert)
   sqlite_test.go    — SQLite-specific unit tests
+  postgres.go       — PostgreSQL implementation (pgxpool, conditional upsert)
+  postgres_test.go  — Integration tests (requires POSTGRES_URL)
   memory.go         — In-memory implementation (testing & local dev)
-  memory_test.go    — Shared behavioral suite run against both implementations
+  memory_test.go    — Shared behavioral suite run against all implementations
 pkg/processor/
   processor.go      — HandleMessage, error classification, V1/V2 parsing, Upsert
   processor_test.go — Unit tests using MemoryStore
@@ -143,12 +145,54 @@ pkg/metrics/
 k8s/
   pubsub.yaml       — Pub/Sub emulator Deployment + Service
   pubsub-init.yaml  — Job: creates topic + subscription
+  postgres.yaml     — PostgreSQL StatefulSet + Service + PVC
   scanner.yaml      — Scanner Deployment
   processor.yaml    — Processor Deployment + Service (probes, Prometheus annotations)
   prometheus.yaml   — Prometheus Deployment + Service + ConfigMap
   grafana.yaml      — Grafana Deployment + Service + ConfigMaps
 Tiltfile            — orchestrates the full K8s dev stack (tilt up)
 ```
+
+### Store Backends
+
+The processor supports multiple storage backends, selected via the `-store` flag:
+
+| Backend | Flag | Best for |
+|---------|------|----------|
+| SQLite | `-store=sqlite -db=/data/scans.db` | Single-replica, local development, zero-dependency setup |
+| PostgreSQL | `-store=postgres` + `POSTGRES_URL` env | Multi-replica, production, high write concurrency |
+
+The default is `sqlite` for backward compatibility. Docker-compose and Kubernetes are pre-configured to use PostgreSQL.
+
+### Database Schema
+
+All store backends maintain the same logical schema — one row per unique `(ip, port, service)` tuple:
+
+```sql
+CREATE TABLE scan_records (
+    ip           TEXT    NOT NULL,
+    port         INTEGER NOT NULL,
+    service      TEXT    NOT NULL,
+    last_scanned BIGINT  NOT NULL,   -- Unix timestamp (SQLite uses INTEGER, which is 64-bit)
+    response     TEXT    NOT NULL,
+    PRIMARY KEY (ip, port, service)
+);
+```
+
+The composite primary key `(ip, port, service)` ensures exactly one row per scan target. All access is by primary key — no secondary indexes are needed.
+
+**Conditional upsert** — the core of out-of-order protection:
+
+```sql
+INSERT INTO scan_records (ip, port, service, last_scanned, response)
+VALUES (...)
+ON CONFLICT (ip, port, service) DO UPDATE SET
+    last_scanned = EXCLUDED.last_scanned,
+    response     = EXCLUDED.response
+WHERE EXCLUDED.last_scanned > scan_records.last_scanned;
+```
+
+The `WHERE` clause ensures only strictly newer scans overwrite existing records. A 24-hour-old message arriving late is silently ignored at the database level — no read-before-write, no application-level locking, no race between concurrent processors. This single atomic statement handles idempotency (at-least-once delivery) and out-of-order protection simultaneously.
 
 ---
 
@@ -158,7 +202,8 @@ A `Makefile` provides shortcuts that mirror the CI jobs exactly:
 
 | Command | What it runs |
 |---------|-------------|
-| `make test` | `go test -race ./...` |
+| `make test` | `go test -race ./...` (Postgres tests skipped when `POSTGRES_URL` is unset) |
+| `make test-integration` | Same, but sets `POSTGRES_URL` for a local Postgres on `:5432` |
 | `make lint` | `golangci-lint run ./...` |
 | `make build` | `CGO_ENABLED=0 go build` for both binaries |
 | `make tidy` | `go mod tidy && go mod verify` |
@@ -205,7 +250,7 @@ The Kubernetes manifests live in `k8s/` and demonstrate production patterns: rea
 go test ./pkg/... -v -race
 ```
 
-Runs tests across `pkg/store` and `pkg/processor` with the race detector enabled. The shared behavioral suite (`runStoreSuite`) runs against both `MemoryStore` and `SQLiteStore`, confirming both implementations honour the `Store` contract identically. No external dependencies required.
+Runs tests across `pkg/store` and `pkg/processor` with the race detector enabled. The shared behavioral suite (`runStoreSuite`) runs against `MemoryStore`, `SQLiteStore`, and `PostgresStore` (when `POSTGRES_URL` is set), confirming all implementations honour the `Store` contract identically.
 
 ### Integration test (full stack)
 
@@ -213,19 +258,15 @@ Runs tests across `pkg/store` and `pkg/processor` with the race detector enabled
 docker compose up --build
 ```
 
-This starts the Pub/Sub emulator, creates the topic and subscription, builds and runs the scanner (one scan/second) and the processor. The SQLite database is stored in a named Docker volume (`scan-data`).
+This starts the Pub/Sub emulator, creates the topic and subscription, PostgreSQL, and builds and runs the scanner (one scan/second) and the processor. Data is persisted in a named Docker volume (`pg-data`).
 
 To inspect the live state of the database while the stack is running:
 
 ```bash
-# Open a shell inside the processor container
-docker compose exec processor sh
-
-# Inside the container — query the database
-apk add --no-cache sqlite
-sqlite3 /data/scans.db \
-  "SELECT ip, port, service, datetime(last_scanned, ‘unixepoch’) AS scanned_at, response
-   FROM scan_records ORDER BY last_scanned DESC;"
+docker compose exec postgres psql -U processor -d scans -c \
+  "SELECT ip, port, service,
+          to_timestamp(last_scanned) AS scanned_at, response
+   FROM scan_records ORDER BY last_scanned DESC LIMIT 10;"
 ```
 
 You should see one row per unique `(ip, port, service)` tuple, with `last_scanned` advancing forward over time as newer scans arrive.
@@ -275,7 +316,7 @@ The repo ships a GitHub Actions workflow (`.github/workflows/ci.yml`) that runs 
 | Job | What it does |
 |-----|-------------|
 | **lint** | `go mod tidy` drift check + golangci-lint |
-| **test** | `go test -race ./...` + per-package coverage summary |
+| **test** | `go test -race ./...` with Postgres service container + per-package coverage summary |
 | **build** | Compiles both binaries and builds both Docker images |
 | **integration** | Starts the full `docker compose` stack and asserts `/healthz` returns `{"status":"ok"}` before tearing down |
 

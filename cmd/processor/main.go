@@ -34,15 +34,20 @@ func main() {
 
 	projectID := flag.String("project", "test-project", "GCP project ID")
 	subID := flag.String("subscription", "scan-sub", "Pub/Sub subscription ID")
+	storeType := flag.String("store", "sqlite", "Store backend: sqlite or postgres")
 	dbPath := flag.String("db", "/data/scans.db", "Path to SQLite database file")
+	postgresURL := flag.String("postgres-url", "", "PostgreSQL connection string (required when -store=postgres)")
 	maxOutstanding := flag.Int("concurrency", 10, "Max outstanding messages per pull")
 	metricsAddr := flag.String("metrics-addr", ":8080", "Address for the /metrics and /healthz HTTP server")
 	flag.Parse()
 
-	// Allow the project ID to be overridden via environment variable, matching
-	// the docker-compose convention used by the scanner service.
+	// Allow the project ID and Postgres URL to be overridden via environment
+	// variables, matching the docker-compose convention used by the scanner.
 	if v := os.Getenv("PUBSUB_PROJECT_ID"); v != "" {
 		*projectID = v
+	}
+	if v := os.Getenv("POSTGRES_URL"); v != "" {
+		*postgresURL = v
 	}
 
 	// signal.NotifyContext cancels ctx on SIGINT or SIGTERM, which propagates
@@ -55,9 +60,28 @@ func main() {
 	reg := prometheus.NewRegistry()
 	rec := metrics.NewRecorder(reg)
 
-	s, err := store.NewSQLiteStore(*dbPath)
-	if err != nil {
-		slog.Error("failed to init store", "error", err)
+	var s store.Store
+	switch *storeType {
+	case "sqlite":
+		ss, err := store.NewSQLiteStore(*dbPath)
+		if err != nil {
+			slog.Error("failed to init sqlite store", "error", err)
+			os.Exit(1)
+		}
+		s = ss
+	case "postgres":
+		if *postgresURL == "" {
+			slog.Error("postgres-url is required when -store=postgres")
+			os.Exit(1)
+		}
+		ps, err := store.NewPostgresStore(ctx, *postgresURL)
+		if err != nil {
+			slog.Error("failed to init postgres store", "error", err)
+			os.Exit(1)
+		}
+		s = ps
+	default:
+		slog.Error("unknown store type", "store", *storeType)
 		os.Exit(1)
 	}
 	defer func() {
@@ -141,7 +165,7 @@ func main() {
 	slog.Info("processor started",
 		"project", *projectID,
 		"subscription", *subID,
-		"db", *dbPath,
+		"store", *storeType,
 		"concurrency", *maxOutstanding,
 	)
 
