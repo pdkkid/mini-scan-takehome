@@ -1,0 +1,30 @@
+version: "2"
+
+linters:
+  # "standard" enables the baseline set: govet, errcheck, staticcheck,
+  # ineffassign, unused — good signal with almost no noise.
+  default: standard
+  enable:
+    - revive      # idiomatic Go style; drop-in successor to golint
+    - gocritic    # extra diagnostic checks (null-deref patterns, etc.)
+    - misspell    # catch typos in comments and string literals
+    - unconvert   # flag unnecessary type conversions
+    - nolintlint  # ensure //nolint directives are valid and not stale
+
+linters-settings:
+  gocritic:
+    # "diagnostic" catches real bugs; "style" is too opinionated for a team
+    # that hasn't aligned on a style guide yet.
+    enabled-tags:
+      - diagnostic
+
+  nolintlint:
+    # All //nolint directives must name the specific linter being suppressed
+    # (e.g. //nolint:errcheck, not just //nolint). This prevents blanket
+    # suppressions that mask unrelated issues introduced later.
+    require-specific: true
+    allow-unused: false
+
+issues:
+  # Report every instance of an issue, not just the first few.
+  max-same-issues: 0
