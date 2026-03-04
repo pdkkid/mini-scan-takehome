@@ -96,6 +96,14 @@ Multiple processor replicas can consume from the same Pub/Sub subscription — P
 
 The processor uses Go's stdlib `log/slog` package (introduced in Go 1.21) with a JSON handler, so every log line is a machine-readable JSON object. Each warning includes the Pub/Sub `msg_id` and the full `error` as discrete fields, making it straightforward to filter and alert on error classes in any log aggregation system (Datadog, Cloud Logging, etc.).
 
+**Prometheus metrics**
+
+The processor exposes a `/metrics` endpoint (Prometheus scrape format) and a `/healthz` liveness probe on port `8080`, served in a background goroutine alongside the main receive loop. An isolated `prometheus.Registry` is used rather than the global default, which is safer in library contexts and avoids unintended metric exposure.
+
+Two metrics are recorded per message:
+- `scan_messages_processed_total{status}` — counter labelled `ok`, `permanent`, or `transient`
+- `scan_message_processing_duration_seconds` — histogram of end-to-end handling latency
+
 **Graceful shutdown**
 
 `signal.NotifyContext` cancels the root context on `SIGINT`/`SIGTERM`, causing `sub.Receive` to drain all in-flight `HandleMessage` calls before returning.
@@ -104,7 +112,7 @@ The processor uses Go's stdlib `log/slog` package (introduced in Go 1.21) with a
 
 ```
 cmd/processor/
-  main.go           — entry point: flags, PubSub wiring, graceful shutdown
+  main.go           — entry point: flags, PubSub/metrics wiring, graceful shutdown
   Dockerfile        — multi-stage build (CGO_ENABLED=0, Alpine runtime)
 pkg/store/
   store.go          — Store interface + ScanRecord type
@@ -115,6 +123,8 @@ pkg/store/
 pkg/processor/
   processor.go      — HandleMessage, error classification, V1/V2 parsing, Upsert
   processor_test.go — Unit tests using MemoryStore
+pkg/metrics/
+  metrics.go        — Prometheus Recorder (counters + histogram)
 ```
 
 ---
@@ -151,3 +161,21 @@ sqlite3 /data/scans.db \
 ```
 
 You should see one row per unique `(ip, port, service)` tuple, with `last_scanned` advancing forward over time as newer scans arrive.
+
+### Observability
+
+Once the stack is running, the processor's metrics and health endpoints are available on the host:
+
+```bash
+# Liveness probe
+curl http://localhost:8080/healthz
+
+# Prometheus metrics — watch scan_messages_processed_total update in real time
+watch -n2 'curl -s http://localhost:8080/metrics | grep scan_'
+```
+
+Example output:
+```
+scan_message_processing_duration_seconds_count 42
+scan_messages_processed_total{status="ok"} 42
+```

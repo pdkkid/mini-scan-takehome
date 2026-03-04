@@ -4,13 +4,17 @@ import (
 	"context"
 	"flag"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"cloud.google.com/go/pubsub"
+	"github.com/censys/scan-takehome/pkg/metrics"
 	"github.com/censys/scan-takehome/pkg/processor"
 	"github.com/censys/scan-takehome/pkg/store"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -24,6 +28,7 @@ func main() {
 	subID          := flag.String("subscription", "scan-sub", "Pub/Sub subscription ID")
 	dbPath         := flag.String("db", "/data/scans.db", "Path to SQLite database file")
 	maxOutstanding := flag.Int("concurrency", 10, "Max outstanding messages per pull")
+	metricsAddr    := flag.String("metrics-addr", ":8080", "Address for the /metrics and /healthz HTTP server")
 	flag.Parse()
 
 	// Allow the project ID to be overridden via environment variable, matching
@@ -36,6 +41,26 @@ func main() {
 	// into sub.Receive — causing it to drain in-flight handlers before returning.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Isolated Prometheus registry — avoids polluting (or inheriting from) the
+	// global default registry, which is best practice for server applications.
+	reg := prometheus.NewRegistry()
+	rec := metrics.NewRecorder(reg)
+
+	// Serve /metrics (Prometheus scrape endpoint) and /healthz (liveness probe)
+	// in a background goroutine alongside the main Pub/Sub receive loop.
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	go func() {
+		slog.Info("starting HTTP server", "addr", *metricsAddr)
+		if err := http.ListenAndServe(*metricsAddr, mux); err != nil && err != http.ErrServerClosed {
+			slog.Error("HTTP server failed", "error", err)
+			os.Exit(1)
+		}
+	}()
 
 	s, err := store.NewSQLiteStore(*dbPath)
 	if err != nil {
@@ -56,7 +81,7 @@ func main() {
 	sub := client.Subscription(*subID)
 	sub.ReceiveSettings.MaxOutstandingMessages = *maxOutstanding
 
-	proc := processor.New(s)
+	proc := processor.NewWithRecorder(s, rec)
 
 	slog.Info("processor started",
 		"project", *projectID,

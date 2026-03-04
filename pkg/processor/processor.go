@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"cloud.google.com/go/pubsub"
+	"github.com/censys/scan-takehome/pkg/metrics"
 	"github.com/censys/scan-takehome/pkg/scanning"
 	"github.com/censys/scan-takehome/pkg/store"
 )
@@ -28,7 +30,8 @@ func permanent(err error) error {
 
 // Processor subscribes to a Pub/Sub subscription and persists scan results.
 type Processor struct {
-	store store.Store
+	store    store.Store
+	recorder *metrics.Recorder // nil-safe; omit in tests
 }
 
 // New creates a Processor that writes scan records to the given Store.
@@ -36,29 +39,45 @@ func New(s store.Store) *Processor {
 	return &Processor{store: s}
 }
 
+// NewWithRecorder creates a Processor with Prometheus instrumentation.
+func NewWithRecorder(s store.Store, r *metrics.Recorder) *Processor {
+	return &Processor{store: s, recorder: r}
+}
+
 // HandleMessage is a pubsub.MessageHandler that routes messages through
 // Process and dispatches Ack or Nack based on the error class:
 //
-//   - No error        → Ack
-//   - Permanent error → Ack (drop; retrying will never succeed)
-//   - Transient error → Nack (redeliver; e.g. temporary store outage)
+//   - No error        → Ack  (status="ok")
+//   - Permanent error → Ack  (status="permanent"; drop — retrying won't help)
+//   - Transient error → Nack (status="transient"; redeliver when store recovers)
 func (p *Processor) HandleMessage(ctx context.Context, msg *pubsub.Message) {
+	start := time.Now()
 	err := p.Process(ctx, msg.Data)
+
+	var status string
 	switch {
 	case err == nil:
 		msg.Ack()
+		status = "ok"
 	case errors.Is(err, ErrPermanent):
 		slog.WarnContext(ctx, "dropping message (permanent error)",
 			"msg_id", msg.ID,
 			"error", err,
 		)
 		msg.Ack()
+		status = "permanent"
 	default:
 		slog.WarnContext(ctx, "nacking message (transient error)",
 			"msg_id", msg.ID,
 			"error", err,
 		)
 		msg.Nack()
+		status = "transient"
+	}
+
+	if p.recorder != nil {
+		p.recorder.MessagesProcessed.WithLabelValues(status).Inc()
+		p.recorder.ProcessingDuration.Observe(time.Since(start).Seconds())
 	}
 }
 

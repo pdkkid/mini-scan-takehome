@@ -51,6 +51,8 @@ services:
     build:
       context: .
       dockerfile: ./cmd/processor/Dockerfile
+    ports:
+      - "8080:8080"   # /metrics (Prometheus) and /healthz
     volumes:
       - scan-data:/data
 
