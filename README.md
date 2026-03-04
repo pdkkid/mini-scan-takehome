@@ -10,13 +10,28 @@ The `docker-compose.yml` file sets up a toy example of a scanner. It spins up a 
 
 Your job is to build the data processing side. It should:
 
-1.  Pull scan results from the subscription `scan-sub`.
-2.  Maintain an up-to-date record of each unique `(ip, port, service)`. This should contain when the service was last scanned and a string containing the service's response.
+1. Pull scan results from the subscription `scan-sub`.
+2. Maintain an up-to-date record of each unique `(ip, port, service)`. This should contain when the service was last scanned and a string containing the service's response.
 
-> ***NOTE***The scanner can publish data in two formats, shown below. In both of the following examples, the service response should be stored as: `"hello world"`.
-> 
+> **_NOTE_**
+> The scanner can publish data in two formats, shown below. In both of the following examples, the service response should be stored as: `"hello world"`.
+>
 > ```javascript
-> {  // ...  "data_version": 1,  "data": {    "response_bytes_utf8": "aGVsbG8gd29ybGQ="  }}{  // ...  "data_version": 2,  "data": {    "response_str": "hello world"  }}
+> {
+>   // ...
+>   "data_version": 1,
+>   "data": {
+>     "response_bytes_utf8": "aGVsbG8gd29ybGQ="
+>   }
+> }
+>
+> {
+>   // ...
+>   "data_version": 2,
+>   "data": {
+>     "response_str": "hello world"
+>   }
+> }
 > ```
 
 Your processing application should be able to be scaled horizontally, but this isn't something you need to actually do. The processing application should use `at-least-once` semantics where ever applicable.
@@ -125,6 +140,14 @@ pkg/processor/
   processor_test.go — Unit tests using MemoryStore
 pkg/metrics/
   metrics.go        — Prometheus Recorder (counters + histogram)
+k8s/
+  pubsub.yaml       — Pub/Sub emulator Deployment + Service
+  pubsub-init.yaml  — Job: creates topic + subscription
+  scanner.yaml      — Scanner Deployment
+  processor.yaml    — Processor Deployment + Service (probes, Prometheus annotations)
+  prometheus.yaml   — Prometheus Deployment + Service + ConfigMap
+  grafana.yaml      — Grafana Deployment + Service + ConfigMaps
+Tiltfile            — orchestrates the full K8s dev stack (tilt up)
 ```
 
 ---
@@ -139,8 +162,43 @@ A `Makefile` provides shortcuts that mirror the CI jobs exactly:
 | `make lint` | `golangci-lint run ./...` |
 | `make build` | `CGO_ENABLED=0 go build` for both binaries |
 | `make tidy` | `go mod tidy && go mod verify` |
+| `make up` | `tilt up` |
+| `make down` | `tilt down` |
 
 `make lint` requires [golangci-lint](https://golangci-lint.run/usage/install/) to be installed locally. The linter config lives in `.golangci.yml`.
+
+### Kubernetes Development
+
+The project can also run on a local Kubernetes cluster using [Tilt](https://tilt.dev/).
+
+**Prerequisites:**
+- Docker Desktop with Kubernetes enabled (Settings → Kubernetes → Enable Kubernetes)
+- [Tilt](https://docs.tilt.dev/install.html) installed (`brew install tilt-dev/tap/tilt`)
+
+**Start the stack:**
+
+```bash
+tilt up       # or: make up
+```
+
+Tilt builds both container images from the existing Dockerfiles, deploys all Kubernetes manifests, and opens a browser UI showing real-time status for every resource. File changes trigger automatic image rebuilds and pod restarts.
+
+**Endpoints (same as docker-compose):**
+
+| URL | Service |
+|-----|---------|
+| http://localhost:8080/healthz | Processor health check |
+| http://localhost:8080/metrics | Prometheus metrics |
+| http://localhost:9090 | Prometheus UI |
+| http://localhost:3000 | Grafana (admin / admin) |
+
+**Tear down:**
+
+```bash
+tilt down     # or: make down
+```
+
+The Kubernetes manifests live in `k8s/` and demonstrate production patterns: readiness/liveness probes, resource requests and limits, ConfigMaps for configuration, proper labels and selectors, and Prometheus pod annotations for service discovery.
 
 ---
 

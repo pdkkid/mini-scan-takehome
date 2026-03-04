@@ -1,4 +1,4 @@
-.PHONY: test lint build tidy
+.PHONY: test lint build tidy up down
 
 ## test: run all tests with race detector enabled
 test:
@@ -17,3 +17,11 @@ build:
 tidy:
 	go mod tidy
 	go mod verify
+
+## up: start the full stack in Kubernetes via Tilt (requires Docker Desktop K8s + Tilt)
+up:
+	tilt up
+
+## down: tear down all Kubernetes resources deployed by Tilt
+down:
+	tilt down
