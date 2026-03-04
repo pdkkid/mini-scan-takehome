@@ -111,6 +111,13 @@ func runStoreSuite(t *testing.T, newStore func(t *testing.T) store.Store) {
 		}
 	})
 
+	t.Run("Ping", func(t *testing.T) {
+		s := newStore(t)
+		if err := s.Ping(context.Background()); err != nil {
+			t.Fatalf("Ping failed on healthy store: %v", err)
+		}
+	})
+
 	t.Run("Upsert/Concurrent", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()

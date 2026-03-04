@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"cloud.google.com/go/pubsub"
 	"github.com/censys/scan-takehome/pkg/metrics"
@@ -16,6 +18,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+// healthStatus is the JSON body returned by the /healthz endpoint.
+type healthStatus struct {
+	Status string            `json:"status"`
+	Checks map[string]string `json:"checks"`
+}
 
 func main() {
 	// JSON-structured logging so every field is machine-readable by log
@@ -47,21 +55,6 @@ func main() {
 	reg := prometheus.NewRegistry()
 	rec := metrics.NewRecorder(reg)
 
-	// Serve /metrics (Prometheus scrape endpoint) and /healthz (liveness probe)
-	// in a background goroutine alongside the main Pub/Sub receive loop.
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	go func() {
-		slog.Info("starting HTTP server", "addr", *metricsAddr)
-		if err := http.ListenAndServe(*metricsAddr, mux); err != nil && err != http.ErrServerClosed {
-			slog.Error("HTTP server failed", "error", err)
-			os.Exit(1)
-		}
-	}()
-
 	s, err := store.NewSQLiteStore(*dbPath)
 	if err != nil {
 		slog.Error("failed to init store", "error", err)
@@ -80,6 +73,60 @@ func main() {
 
 	sub := client.Subscription(*subID)
 	sub.ReceiveSettings.MaxOutstandingMessages = *maxOutstanding
+
+	// Serve /metrics (Prometheus scrape endpoint) and /healthz (readiness probe)
+	// in a background goroutine alongside the main Pub/Sub receive loop.
+	// The HTTP server is started after s and sub are initialised so the /healthz
+	// handler can safely close over them without a race.
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		// Cap each check at 3 s so a hung dependency can't block the probe forever.
+		hctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+
+		checks := make(map[string]string)
+		healthy := true
+
+		// Store health — db.PingContext opens/reuses a connection and round-trips
+		// a lightweight query, confirming the file is accessible and not corrupt.
+		if err := s.Ping(hctx); err != nil {
+			checks["store"] = err.Error()
+			healthy = false
+		} else {
+			checks["store"] = "ok"
+		}
+
+		// Pub/Sub health — Exists() performs a live gRPC call to the server and
+		// confirms both reachability and that the subscription actually exists.
+		if exists, err := sub.Exists(hctx); err != nil {
+			checks["pubsub"] = err.Error()
+			healthy = false
+		} else if !exists {
+			checks["pubsub"] = "subscription not found"
+			healthy = false
+		} else {
+			checks["pubsub"] = "ok"
+		}
+
+		status := "ok"
+		code := http.StatusOK
+		if !healthy {
+			status = "degraded"
+			code = http.StatusServiceUnavailable
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		json.NewEncoder(w).Encode(healthStatus{Status: status, Checks: checks}) //nolint:errcheck
+	})
+	go func() {
+		slog.Info("starting HTTP server", "addr", *metricsAddr)
+		if err := http.ListenAndServe(*metricsAddr, mux); err != nil && err != http.ErrServerClosed {
+			slog.Error("HTTP server failed", "error", err)
+			os.Exit(1)
+		}
+	}()
 
 	proc := processor.NewWithRecorder(s, rec)
 

@@ -24,6 +24,10 @@ type Store interface {
 	// Returns nil, nil if no record exists for that key.
 	Get(ctx context.Context, ip string, port uint32, service string) (*ScanRecord, error)
 
+	// Ping verifies the store is reachable and usable. It is called by the
+	// health-check endpoint and should return quickly.
+	Ping(ctx context.Context) error
+
 	// Close releases any resources held by the store.
 	Close() error
 }

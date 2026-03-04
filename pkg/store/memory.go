@@ -50,5 +50,8 @@ func (m *MemoryStore) Get(_ context.Context, ip string, port uint32, service str
 	return &c, nil
 }
 
+// Ping is a no-op for MemoryStore — an in-memory store is always reachable.
+func (m *MemoryStore) Ping(_ context.Context) error { return nil }
+
 // Close is a no-op for MemoryStore; it exists to satisfy the Store interface.
 func (m *MemoryStore) Close() error { return nil }

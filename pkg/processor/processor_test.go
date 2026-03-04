@@ -23,7 +23,8 @@ func (e *errStore) Upsert(_ context.Context, _ store.ScanRecord) error {
 func (e *errStore) Get(_ context.Context, _ string, _ uint32, _ string) (*store.ScanRecord, error) {
 	return nil, errors.New("store unavailable")
 }
-func (e *errStore) Close() error { return nil }
+func (e *errStore) Ping(_ context.Context) error { return errors.New("store unavailable") }
+func (e *errStore) Close() error                  { return nil }
 
 // makeMsgData marshals a Scan into the JSON bytes the scanner would publish.
 func makeMsgData(t *testing.T, scan *scanning.Scan) []byte {

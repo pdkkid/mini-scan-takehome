@@ -108,6 +108,12 @@ func (s *SQLiteStore) Get(ctx context.Context, ip string, port uint32, service s
 	return r, nil
 }
 
+// Ping verifies the database connection is alive by issuing a lightweight
+// ping through the connection pool.
+func (s *SQLiteStore) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
 // Close releases the database connection.
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
