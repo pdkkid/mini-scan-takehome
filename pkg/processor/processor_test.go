@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -51,6 +52,18 @@ func (m *mockStore) Get(_ context.Context, ip string, port uint32, service strin
 }
 
 func (m *mockStore) Close() error { return nil }
+
+// errStore is a Store that always fails Upsert, simulating a transient
+// outage (e.g. database unavailable).
+type errStore struct{}
+
+func (e *errStore) Upsert(_ context.Context, _ store.ScanRecord) error {
+	return errors.New("store unavailable")
+}
+func (e *errStore) Get(_ context.Context, _ string, _ uint32, _ string) (*store.ScanRecord, error) {
+	return nil, errors.New("store unavailable")
+}
+func (e *errStore) Close() error { return nil }
 
 // makeMsgData marshals a Scan into the JSON bytes the scanner would publish.
 func makeMsgData(t *testing.T, scan *scanning.Scan) []byte {
@@ -160,12 +173,14 @@ func TestProcess_V1_HelloWorld(t *testing.T) {
 	}
 }
 
+// TestProcess_UnknownVersion verifies that an unrecognised data_version is
+// classified as a permanent error. The message is Acked (dropped) rather than
+// Nacked to prevent an infinite redelivery loop — retrying will never help.
 func TestProcess_UnknownVersion(t *testing.T) {
 	ms := newMockStore()
 	p := processor.New(ms)
 	ctx := context.Background()
 
-	// scanning.Version == 0 (the iota zero value) is not a valid data version.
 	scan := &scanning.Scan{
 		Ip:          "1.1.1.1",
 		Port:        80,
@@ -175,30 +190,65 @@ func TestProcess_UnknownVersion(t *testing.T) {
 		Data:        map[string]interface{}{},
 	}
 
-	msg := &pubsub.Message{ID: "test-4", Data: makeMsgData(t, scan)}
-	p.HandleMessage(ctx, msg) // should Nack internally (no panic)
-
-	// Record should NOT have been stored.
-	got, err := ms.Get(ctx, "1.1.1.1", 80, "HTTP")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	err := p.Process(ctx, makeMsgData(t, scan))
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
+	if !errors.Is(err, processor.ErrPermanent) {
+		t.Errorf("unknown version should be a permanent error, got: %v", err)
+	}
+
+	// Nothing should have been stored.
+	got, _ := ms.Get(ctx, "1.1.1.1", 80, "HTTP")
 	if got != nil {
 		t.Errorf("expected no record for unknown version, got %+v", got)
 	}
 }
 
+// TestProcess_MalformedJSON verifies that unparseable payloads are classified
+// as permanent errors. Retrying malformed bytes will always fail, so the
+// message is Acked to drop it rather than Nacked to loop forever.
 func TestProcess_MalformedJSON(t *testing.T) {
 	ms := newMockStore()
 	p := processor.New(ms)
 	ctx := context.Background()
 
-	msg := &pubsub.Message{ID: "test-5", Data: []byte("not valid json {")}
-	p.HandleMessage(ctx, msg) // should Nack internally (no panic)
+	err := p.Process(ctx, []byte("not valid json {"))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, processor.ErrPermanent) {
+		t.Errorf("malformed JSON should be a permanent error, got: %v", err)
+	}
 
 	// Nothing should be stored.
 	got, _ := ms.Get(ctx, "1.1.1.1", 80, "HTTP")
 	if got != nil {
 		t.Errorf("expected no record after malformed JSON, got %+v", got)
+	}
+}
+
+// TestProcess_TransientStoreError verifies that a store failure is NOT
+// classified as permanent. Pub/Sub will Nack and redeliver the message
+// so it can succeed once the store recovers.
+func TestProcess_TransientStoreError(t *testing.T) {
+	p := processor.New(&errStore{})
+	ctx := context.Background()
+
+	scan := &scanning.Scan{
+		Ip:          "1.1.1.1",
+		Port:        80,
+		Service:     "HTTP",
+		Timestamp:   5000,
+		DataVersion: scanning.V2,
+		Data:        &scanning.V2Data{ResponseStr: "hello"},
+	}
+
+	err := p.Process(ctx, makeMsgData(t, scan))
+	if err == nil {
+		t.Fatal("expected store error, got nil")
+	}
+	if errors.Is(err, processor.ErrPermanent) {
+		t.Errorf("store error should be transient (not permanent), got: %v", err)
 	}
 }

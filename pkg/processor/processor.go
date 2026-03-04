@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 
@@ -10,6 +11,20 @@ import (
 	"github.com/censys/scan-takehome/pkg/scanning"
 	"github.com/censys/scan-takehome/pkg/store"
 )
+
+// ErrPermanent is a sentinel used to classify errors that should not be
+// retried. When a message produces a permanent error, the processor Acks it
+// (dropping it from the subscription) rather than Nacking, which would cause
+// infinite redelivery. Permanent errors indicate the message itself is the
+// problem — e.g. malformed JSON or an unknown data version — and will never
+// succeed regardless of how many times it is retried.
+var ErrPermanent = errors.New("permanent processing error")
+
+// permanent wraps err alongside ErrPermanent so callers can detect the class
+// with errors.Is(err, ErrPermanent) while still reading the underlying cause.
+func permanent(err error) error {
+	return fmt.Errorf("%w: %w", ErrPermanent, err)
+}
 
 // Processor subscribes to a Pub/Sub subscription and persists scan results.
 type Processor struct {
@@ -21,29 +36,45 @@ func New(s store.Store) *Processor {
 	return &Processor{store: s}
 }
 
-// HandleMessage is a pubsub.MessageHandler. It implements at-least-once
-// semantics: the message is Nacked on any error so Pub/Sub redelivers it,
-// and Acked only after a successful store write.
+// HandleMessage is a pubsub.MessageHandler that routes messages through
+// Process and dispatches Ack or Nack based on the error class:
+//
+//   - No error        → Ack
+//   - Permanent error → Ack (drop; retrying will never succeed)
+//   - Transient error → Nack (redeliver; e.g. temporary store outage)
 func (p *Processor) HandleMessage(ctx context.Context, msg *pubsub.Message) {
-	if err := p.process(ctx, msg.Data); err != nil {
-		log.Printf("error processing message id=%s: %v — nacking for redelivery", msg.ID, err)
-		msg.Nack()
+	err := p.Process(ctx, msg.Data)
+	if err == nil {
+		msg.Ack()
 		return
 	}
-	msg.Ack()
+	if errors.Is(err, ErrPermanent) {
+		log.Printf("permanent error — acking (dropping) message id=%s: %v", msg.ID, err)
+		msg.Ack()
+	} else {
+		log.Printf("transient error — nacking for redelivery message id=%s: %v", msg.ID, err)
+		msg.Nack()
+	}
 }
 
-func (p *Processor) process(ctx context.Context, data []byte) error {
+// Process handles raw Pub/Sub message bytes and writes the result to the store.
+// It is exported to enable white-box testing of error classification.
+//
+// Parse errors are wrapped with ErrPermanent because a structurally invalid
+// message will fail identically on every retry. Store errors are returned
+// unwrapped (transient) so HandleMessage Nacks for redelivery.
+func (p *Processor) Process(ctx context.Context, data []byte) error {
 	var scan scanning.Scan
 	if err := json.Unmarshal(data, &scan); err != nil {
-		return fmt.Errorf("unmarshal scan: %w", err)
+		return permanent(fmt.Errorf("unmarshal scan: %w", err))
 	}
 
 	response, err := extractResponse(&scan)
 	if err != nil {
-		return fmt.Errorf("extract response (data_version=%d): %w", scan.DataVersion, err)
+		return permanent(fmt.Errorf("extract response (data_version=%d): %w", scan.DataVersion, err))
 	}
 
+	// Store errors are transient — return unwrapped so HandleMessage Nacks.
 	return p.store.Upsert(ctx, store.ScanRecord{
 		Ip:          scan.Ip,
 		Port:        scan.Port,
