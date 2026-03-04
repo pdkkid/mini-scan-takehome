@@ -57,6 +57,11 @@ func (p *Processor) HandleMessage(ctx context.Context, msg *pubsub.Message) {
 	var status string
 	switch {
 	case err == nil:
+		// Log structured events for successful processing, including the message ID - mainly to verify working in logs
+		slog.InfoContext(ctx, "message processed successfully",
+			"msg_id", msg.ID,
+			"processing_time_ms", time.Since(start).Milliseconds(),
+		)
 		msg.Ack()
 		status = "ok"
 	case errors.Is(err, ErrPermanent):
@@ -100,7 +105,7 @@ func (p *Processor) Process(ctx context.Context, data []byte) error {
 
 	// Store errors are transient — return unwrapped so HandleMessage Nacks.
 	return p.store.Upsert(ctx, store.ScanRecord{
-		Ip:          scan.Ip,
+		IP:          scan.Ip,
 		Port:        scan.Port,
 		Service:     scan.Service,
 		LastScanned: scan.Timestamp,
