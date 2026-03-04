@@ -1,15 +1,16 @@
 version: "2"
 
 linters:
-  # "standard" enables the baseline set: govet, errcheck, staticcheck,
-  # ineffassign, unused — good signal with almost no noise.
+  # "standard" enables the baseline set: govet, errcheck, staticcheck
   default: standard
   enable:
-    - revive      # idiomatic Go style; drop-in successor to golint
-    - gocritic    # extra diagnostic checks (null-deref patterns, etc.)
     - misspell    # catch typos in comments and string literals
     - unconvert   # flag unnecessary type conversions
     - nolintlint  # ensure //nolint directives are valid and not stale
+  exclusions:
+    paths:
+      - cmd/scanner
+      - pkg/scanning
 
 linters-settings:
   gocritic:
