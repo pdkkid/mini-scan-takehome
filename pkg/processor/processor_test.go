@@ -1,0 +1,204 @@
+package processor_test
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"sync"
+	"testing"
+
+	"cloud.google.com/go/pubsub"
+	"github.com/censys/scan-takehome/pkg/processor"
+	"github.com/censys/scan-takehome/pkg/scanning"
+	"github.com/censys/scan-takehome/pkg/store"
+)
+
+// mockStore is an in-memory Store implementation for testing. It applies
+// the same "keep newest" logic as the real store so tests can verify the
+// full round-trip without a SQLite dependency.
+type mockStore struct {
+	mu      sync.Mutex
+	records map[string]store.ScanRecord
+}
+
+func newMockStore() *mockStore {
+	return &mockStore{records: make(map[string]store.ScanRecord)}
+}
+
+func (m *mockStore) key(ip string, port uint32, service string) string {
+	return fmt.Sprintf("%s:%d:%s", ip, port, service)
+}
+
+func (m *mockStore) Upsert(_ context.Context, r store.ScanRecord) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := m.key(r.Ip, r.Port, r.Service)
+	if existing, ok := m.records[k]; !ok || r.LastScanned > existing.LastScanned {
+		m.records[k] = r
+	}
+	return nil
+}
+
+func (m *mockStore) Get(_ context.Context, ip string, port uint32, service string) (*store.ScanRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.records[m.key(ip, port, service)]
+	if !ok {
+		return nil, nil
+	}
+	return &r, nil
+}
+
+func (m *mockStore) Close() error { return nil }
+
+// makeMsgData marshals a Scan into the JSON bytes the scanner would publish.
+func makeMsgData(t *testing.T, scan *scanning.Scan) []byte {
+	t.Helper()
+	data, err := json.Marshal(scan)
+	if err != nil {
+		t.Fatalf("json.Marshal scan: %v", err)
+	}
+	return data
+}
+
+func TestProcess_V2(t *testing.T) {
+	ms := newMockStore()
+	p := processor.New(ms)
+	ctx := context.Background()
+
+	scan := &scanning.Scan{
+		Ip:          "1.1.1.1",
+		Port:        80,
+		Service:     "HTTP",
+		Timestamp:   1000,
+		DataVersion: scanning.V2,
+		Data:        &scanning.V2Data{ResponseStr: "hello world"},
+	}
+
+	msg := &pubsub.Message{ID: "test-1", Data: makeMsgData(t, scan)}
+	p.HandleMessage(ctx, msg)
+
+	got, err := ms.Get(ctx, "1.1.1.1", 80, "HTTP")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected record, got nil")
+	}
+	if got.Response != "hello world" {
+		t.Errorf("Response: got %q, want %q", got.Response, "hello world")
+	}
+	if got.LastScanned != 1000 {
+		t.Errorf("LastScanned: got %d, want 1000", got.LastScanned)
+	}
+}
+
+func TestProcess_V1(t *testing.T) {
+	ms := newMockStore()
+	p := processor.New(ms)
+	ctx := context.Background()
+
+	scan := &scanning.Scan{
+		Ip:          "1.1.1.1",
+		Port:        22,
+		Service:     "SSH",
+		Timestamp:   2000,
+		DataVersion: scanning.V1,
+		Data:        &scanning.V1Data{ResponseBytesUtf8: []byte("service response: 42")},
+	}
+
+	msg := &pubsub.Message{ID: "test-2", Data: makeMsgData(t, scan)}
+	p.HandleMessage(ctx, msg)
+
+	got, err := ms.Get(ctx, "1.1.1.1", 22, "SSH")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected record, got nil")
+	}
+	if got.Response != "service response: 42" {
+		t.Errorf("Response: got %q, want %q", got.Response, "service response: 42")
+	}
+}
+
+// TestProcess_V1_HelloWorld verifies the exact example from the README:
+// base64("hello world") == "aGVsbG8gd29ybGQ=" and the decoded response is "hello world".
+func TestProcess_V1_HelloWorld(t *testing.T) {
+	ms := newMockStore()
+	p := processor.New(ms)
+	ctx := context.Background()
+
+	// Verify the base64 encoding matches the README example.
+	encoded := base64.StdEncoding.EncodeToString([]byte("hello world"))
+	if encoded != "aGVsbG8gd29ybGQ=" {
+		t.Fatalf("unexpected base64: %s", encoded)
+	}
+
+	scan := &scanning.Scan{
+		Ip:          "1.1.1.1",
+		Port:        53,
+		Service:     "DNS",
+		Timestamp:   3000,
+		DataVersion: scanning.V1,
+		Data:        &scanning.V1Data{ResponseBytesUtf8: []byte("hello world")},
+	}
+
+	msg := &pubsub.Message{ID: "test-3", Data: makeMsgData(t, scan)}
+	p.HandleMessage(ctx, msg)
+
+	got, err := ms.Get(ctx, "1.1.1.1", 53, "DNS")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected record, got nil")
+	}
+	if got.Response != "hello world" {
+		t.Errorf("Response: got %q, want %q", got.Response, "hello world")
+	}
+}
+
+func TestProcess_UnknownVersion(t *testing.T) {
+	ms := newMockStore()
+	p := processor.New(ms)
+	ctx := context.Background()
+
+	// scanning.Version == 0 (the iota zero value) is not a valid data version.
+	scan := &scanning.Scan{
+		Ip:          "1.1.1.1",
+		Port:        80,
+		Service:     "HTTP",
+		Timestamp:   4000,
+		DataVersion: scanning.Version, // == 0, not V1 or V2
+		Data:        map[string]interface{}{},
+	}
+
+	msg := &pubsub.Message{ID: "test-4", Data: makeMsgData(t, scan)}
+	p.HandleMessage(ctx, msg) // should Nack internally (no panic)
+
+	// Record should NOT have been stored.
+	got, err := ms.Get(ctx, "1.1.1.1", 80, "HTTP")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected no record for unknown version, got %+v", got)
+	}
+}
+
+func TestProcess_MalformedJSON(t *testing.T) {
+	ms := newMockStore()
+	p := processor.New(ms)
+	ctx := context.Background()
+
+	msg := &pubsub.Message{ID: "test-5", Data: []byte("not valid json {")}
+	p.HandleMessage(ctx, msg) // should Nack internally (no panic)
+
+	// Nothing should be stored.
+	got, _ := ms.Get(ctx, "1.1.1.1", 80, "HTTP")
+	if got != nil {
+		t.Errorf("expected no record after malformed JSON, got %+v", got)
+	}
+}
