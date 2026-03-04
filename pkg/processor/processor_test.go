@@ -5,8 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"sync"
 	"testing"
 
 	"cloud.google.com/go/pubsub"
@@ -14,44 +12,6 @@ import (
 	"github.com/censys/scan-takehome/pkg/scanning"
 	"github.com/censys/scan-takehome/pkg/store"
 )
-
-// mockStore is an in-memory Store implementation for testing. It applies
-// the same "keep newest" logic as the real store so tests can verify the
-// full round-trip without a SQLite dependency.
-type mockStore struct {
-	mu      sync.Mutex
-	records map[string]store.ScanRecord
-}
-
-func newMockStore() *mockStore {
-	return &mockStore{records: make(map[string]store.ScanRecord)}
-}
-
-func (m *mockStore) key(ip string, port uint32, service string) string {
-	return fmt.Sprintf("%s:%d:%s", ip, port, service)
-}
-
-func (m *mockStore) Upsert(_ context.Context, r store.ScanRecord) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	k := m.key(r.Ip, r.Port, r.Service)
-	if existing, ok := m.records[k]; !ok || r.LastScanned > existing.LastScanned {
-		m.records[k] = r
-	}
-	return nil
-}
-
-func (m *mockStore) Get(_ context.Context, ip string, port uint32, service string) (*store.ScanRecord, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	r, ok := m.records[m.key(ip, port, service)]
-	if !ok {
-		return nil, nil
-	}
-	return &r, nil
-}
-
-func (m *mockStore) Close() error { return nil }
 
 // errStore is a Store that always fails Upsert, simulating a transient
 // outage (e.g. database unavailable).
@@ -76,7 +36,7 @@ func makeMsgData(t *testing.T, scan *scanning.Scan) []byte {
 }
 
 func TestProcess_V2(t *testing.T) {
-	ms := newMockStore()
+	ms := store.NewMemoryStore()
 	p := processor.New(ms)
 	ctx := context.Background()
 
@@ -108,7 +68,7 @@ func TestProcess_V2(t *testing.T) {
 }
 
 func TestProcess_V1(t *testing.T) {
-	ms := newMockStore()
+	ms := store.NewMemoryStore()
 	p := processor.New(ms)
 	ctx := context.Background()
 
@@ -139,7 +99,7 @@ func TestProcess_V1(t *testing.T) {
 // TestProcess_V1_HelloWorld verifies the exact example from the README:
 // base64("hello world") == "aGVsbG8gd29ybGQ=" and the decoded response is "hello world".
 func TestProcess_V1_HelloWorld(t *testing.T) {
-	ms := newMockStore()
+	ms := store.NewMemoryStore()
 	p := processor.New(ms)
 	ctx := context.Background()
 
@@ -177,7 +137,7 @@ func TestProcess_V1_HelloWorld(t *testing.T) {
 // classified as a permanent error. The message is Acked (dropped) rather than
 // Nacked to prevent an infinite redelivery loop — retrying will never help.
 func TestProcess_UnknownVersion(t *testing.T) {
-	ms := newMockStore()
+	ms := store.NewMemoryStore()
 	p := processor.New(ms)
 	ctx := context.Background()
 
@@ -209,7 +169,7 @@ func TestProcess_UnknownVersion(t *testing.T) {
 // as permanent errors. Retrying malformed bytes will always fail, so the
 // message is Acked to drop it rather than Nacked to loop forever.
 func TestProcess_MalformedJSON(t *testing.T) {
-	ms := newMockStore()
+	ms := store.NewMemoryStore()
 	p := processor.New(ms)
 	ctx := context.Background()
 
@@ -221,7 +181,6 @@ func TestProcess_MalformedJSON(t *testing.T) {
 		t.Errorf("malformed JSON should be a permanent error, got: %v", err)
 	}
 
-	// Nothing should be stored.
 	got, _ := ms.Get(ctx, "1.1.1.1", 80, "HTTP")
 	if got != nil {
 		t.Errorf("expected no record after malformed JSON, got %+v", got)

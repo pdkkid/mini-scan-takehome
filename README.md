@@ -47,33 +47,70 @@ Please don’t hesitate to ask any follow-up questions for clarification.
 
 The processor is implemented as a new `cmd/processor` binary. All logic lives in two new packages:
 
--   **`pkg/store`** — a `Store` interface with a SQLite implementation, making it straightforward to swap in a different backend (e.g. PostgreSQL).
--   **`pkg/processor`** — message parsing and dispatch; calls `store.Upsert` and handles Ack/Nack.
+- **`pkg/store`** — a `Store` interface with two implementations: `SQLiteStore` (persistent, used in production) and `MemoryStore` (in-process, used in tests). Adding a new backend requires only implementing the interface.
+- **`pkg/processor`** — message parsing, V1/V2 decoding, error classification, and Ack/Nack dispatch.
 
 ### Design Decisions
 
-**Store interface for swappability**`pkg/store/store.go` defines a `Store` interface with `Upsert` and `Get` methods. Adding a new backend (Postgres, DynamoDB, etc.) requires only implementing that interface — no changes to the processor or main.
+**Store interface for swappability**
 
-**Atomic out-of-order protection**The SQLite upsert uses a single atomic SQL statement:
+`pkg/store/store.go` defines a `Store` interface with `Upsert` and `Get` methods. The interface is proven by two concrete implementations (`SQLiteStore` and `MemoryStore`) that are verified against an identical behavioral test suite — if both pass, they are safely interchangeable.
+
+**Atomic out-of-order protection**
+
+The SQLite upsert uses a single atomic SQL statement:
 
 ```sql
-INSERT INTO scan_records ...ON CONFLICT(ip, port, service) DO UPDATE SET    last_scanned = excluded.last_scanned,    response     = excluded.responseWHERE excluded.last_scanned > scan_records.last_scanned;
+INSERT INTO scan_records (ip, port, service, last_scanned, response)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(ip, port, service) DO UPDATE SET
+    last_scanned = excluded.last_scanned,
+    response     = excluded.response
+WHERE excluded.last_scanned > scan_records.last_scanned;
 ```
 
-The `WHERE` clause on `DO UPDATE` means a 24-hour-old message is silently ignored at the database level — no read-before-write, no application-level locking, no race between two concurrent processors.
+The `WHERE` clause on `DO UPDATE` means a 24-hour-old message is silently ignored at the database level — no read-before-write, no application-level locking, no race between concurrent processors. `MemoryStore` applies the same logic in Go under a `sync.RWMutex`.
 
-**At-least-once semantics**The processor calls `msg.Nack()` on any failure (parse error, store error), so Pub/Sub redelivers the message. `msg.Ack()` is called only after a successful `Upsert`. Combined with the idempotent upsert, redeliveries are harmless.
+**Permanent vs. transient error handling**
 
-**V1 / V2 parsing**When `encoding/json` unmarshals into `scanning.Scan`, the `Data interface{}` field becomes `map[string]interface{}`. The processor re-marshals that map back to JSON bytes and unmarshals into the correct typed struct (`V1Data` or `V2Data`) based on `DataVersion`. For V1, Go’s `encoding/json` automatically base64-decodes the `response_bytes_utf8` string into `[]byte`.
+Not all errors should be retried. The processor classifies failures into two categories:
 
-**Horizontal scaling**Multiple processor replicas can run against the same Pub/Sub subscription — Pub/Sub load-balances messages across subscribers automatically. The conditional upsert ensures correctness when two replicas race to write the same `(ip, port, service)`. SQLite is configured with WAL journal mode and a 5-second busy timeout to reduce lock contention on a shared volume. To scale beyond a single volume, swap the store for a networked database (the interface makes this a one-file change).
+- **Permanent** (malformed JSON, unknown `data_version`): the message can never be processed successfully — `Ack` it to drop it, preventing an infinite redelivery loop.
+- **Transient** (store unavailable, network error): failure is situational — `Nack` so Pub/Sub redelivers once the issue resolves.
 
-**Graceful shutdown**`signal.NotifyContext` cancels the root context on `SIGINT`/`SIGTERM`. `sub.Receive` drains all in-flight `HandleMessage` calls before returning, ensuring every message is Acked or Nacked cleanly before exit.
+`ErrPermanent` is an exported sentinel, making the classification testable with `errors.Is`.
+
+**At-least-once semantics**
+
+`msg.Nack()` is called on transient failures so Pub/Sub redelivers. `msg.Ack()` is called on success and on permanent failures (to drop unprocessable messages). Combined with the idempotent upsert, redeliveries are always safe.
+
+**V1 / V2 parsing**
+
+When `encoding/json` unmarshals into `scanning.Scan`, the `Data interface{}` field becomes `map[string]interface{}`. The processor re-marshals that map back to JSON bytes and unmarshals into the correct typed struct (`V1Data` or `V2Data`) based on `DataVersion`. For V1, Go’s `encoding/json` automatically base64-decodes `response_bytes_utf8` into `[]byte`.
+
+**Horizontal scaling**
+
+Multiple processor replicas can consume from the same Pub/Sub subscription — Pub/Sub load-balances automatically. The atomic conditional upsert ensures correctness when two replicas race to write the same `(ip, port, service)`. SQLite is configured with WAL journal mode and a 5-second busy timeout to reduce lock contention on a shared volume. To scale beyond a single host, swap `SQLiteStore` for a networked database — a one-file change.
+
+**Graceful shutdown**
+
+`signal.NotifyContext` cancels the root context on `SIGINT`/`SIGTERM`, causing `sub.Receive` to drain all in-flight `HandleMessage` calls before returning.
 
 ### File Structure
 
 ```
-cmd/processor/  main.go        — entry point: flags, PubSub wiring, graceful shutdown  Dockerfile     — multi-stage build (CGO_ENABLED=0, Alpine runtime)pkg/store/  store.go       — Store interface + ScanRecord type  sqlite.go      — SQLite implementation (WAL, busy timeout, conditional upsert)  sqlite_test.go — unit testspkg/processor/  processor.go      — HandleMessage, V1/V2 parsing, Upsert  processor_test.go — unit tests with an in-memory mock store
+cmd/processor/
+  main.go           — entry point: flags, PubSub wiring, graceful shutdown
+  Dockerfile        — multi-stage build (CGO_ENABLED=0, Alpine runtime)
+pkg/store/
+  store.go          — Store interface + ScanRecord type
+  sqlite.go         — SQLite implementation (WAL, busy timeout, conditional upsert)
+  sqlite_test.go    — SQLite-specific unit tests
+  memory.go         — In-memory implementation (testing & local dev)
+  memory_test.go    — Shared behavioral suite run against both implementations
+pkg/processor/
+  processor.go      — HandleMessage, error classification, V1/V2 parsing, Upsert
+  processor_test.go — Unit tests using MemoryStore
 ```
 
 ---
@@ -86,7 +123,7 @@ cmd/processor/  main.go        — entry point: flags, PubSub wiring, graceful s
 go test ./pkg/... -v -race
 ```
 
-Runs 12 unit tests across `pkg/store` and `pkg/processor` with the race detector enabled. No external dependencies required.
+Runs tests across `pkg/store` and `pkg/processor` with the race detector enabled. The shared behavioral suite (`runStoreSuite`) runs against both `MemoryStore` and `SQLiteStore`, confirming both implementations honour the `Store` contract identically. No external dependencies required.
 
 ### Integration test (full stack)
 
@@ -99,7 +136,14 @@ This starts the Pub/Sub emulator, creates the topic and subscription, builds and
 To inspect the live state of the database while the stack is running:
 
 ```bash
-# Open a shell inside the processor containerdocker compose exec processor sh# Inside the container — query the databaseapk add --no-cache sqlitesqlite3 /data/scans.db "SELECT ip, port, service, datetime(last_scanned, 'unixepoch') AS scanned_at, response FROM scan_records ORDER BY last_scanned DESC;"
+# Open a shell inside the processor container
+docker compose exec processor sh
+
+# Inside the container — query the database
+apk add --no-cache sqlite
+sqlite3 /data/scans.db \
+  "SELECT ip, port, service, datetime(last_scanned, ‘unixepoch’) AS scanned_at, response
+   FROM scan_records ORDER BY last_scanned DESC;"
 ```
 
 You should see one row per unique `(ip, port, service)` tuple, with `last_scanned` advancing forward over time as newer scans arrive.
