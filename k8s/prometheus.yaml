@@ -1,6 +1,46 @@
-# Prometheus — scrapes the processor's /metrics endpoint every 15 seconds.
-# The config is inlined in the ConfigMap (only 8 lines) rather than loaded
-# from an external file, keeping the manifest fully self-contained.
+# Prometheus — scrapes processor pods via Kubernetes service discovery.
+# Uses kubernetes_sd_configs (role: pod) so that every replica is scraped
+# individually, not just whichever pod the Service VIP happens to route to.
+# Requires RBAC: a ServiceAccount with get/list/watch on pods.
+
+# ── RBAC ──────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  labels:
+    app: prometheus
+    component: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+  labels:
+    app: prometheus
+    component: observability
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+  labels:
+    app: prometheus
+    component: observability
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: default
+---
+# ── ConfigMap ─────────────────────────────────────────────────────────────────
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -16,9 +56,29 @@ data:
 
     scrape_configs:
       - job_name: 'scan-processor'
-        static_configs:
-          - targets: ['processor:8080']
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          # Only scrape pods annotated with prometheus.io/scrape=true.
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          # Use the port from the prometheus.io/port annotation.
+          - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: (.+);(.+)
+            replacement: $1:$2
+            target_label: __address__
+          # Use the path from the prometheus.io/path annotation.
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          # Add pod name as a label for per-instance debugging.
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
 ---
+# ── Deployment ────────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -37,6 +97,7 @@ spec:
         app: prometheus
         component: observability
     spec:
+      serviceAccountName: prometheus
       containers:
         - name: prometheus
           image: prom/prometheus:v2.53.0
@@ -74,6 +135,7 @@ spec:
           configMap:
             name: prometheus-config
 ---
+# ── Service ───────────────────────────────────────────────────────────────────
 apiVersion: v1
 kind: Service
 metadata:

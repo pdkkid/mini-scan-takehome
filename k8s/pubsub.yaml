@@ -49,11 +49,11 @@ spec:
             timeoutSeconds: 5
           resources:
             requests:
-              cpu: 400m
-              memory: 1024Mi
+              cpu: 1000m
+              memory: 2048Mi
             limits:
-              cpu: 600m
-              memory: 2056Mi
+              cpu: 2000m
+              memory: 4096Mi
 ---
 apiVersion: v1
 kind: Service

@@ -62,11 +62,11 @@ spec:
               mountPath: /data
           resources:
             requests:
-              cpu: 200m
-              memory: 256Mi
+              cpu: 1m
+              memory: 32Mi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              cpu: 1m
+              memory: 32Mi
       volumes:
         # emptyDir is appropriate for local development — data does not survive
         # pod restarts, but the scanner continuously generates new scan results.
