@@ -16,7 +16,11 @@ func newTestStore(t *testing.T) *store.SQLiteStore {
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("failed to close store: %v", err)
+		}
+	})
 	return s
 }
 
@@ -25,7 +29,7 @@ func TestUpsert_Insert(t *testing.T) {
 	ctx := context.Background()
 
 	rec := store.ScanRecord{
-		Ip:          "1.1.1.1",
+		IP:          "1.1.1.1",
 		Port:        80,
 		Service:     "HTTP",
 		LastScanned: 1000,
@@ -36,7 +40,7 @@ func TestUpsert_Insert(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	got, err := s.Get(ctx, rec.Ip, rec.Port, rec.Service)
+	got, err := s.Get(ctx, rec.IP, rec.Port, rec.Service)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -55,8 +59,8 @@ func TestUpsert_UpdateNewer(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	older := store.ScanRecord{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 500, Response: "old"}
-	newer := store.ScanRecord{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "new"}
+	older := store.ScanRecord{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 500, Response: "old"}
+	newer := store.ScanRecord{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "new"}
 
 	if err := s.Upsert(ctx, older); err != nil {
 		t.Fatalf("Upsert older: %v", err)
@@ -81,8 +85,8 @@ func TestUpsert_RejectOlder(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	newer := store.ScanRecord{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "newer"}
-	older := store.ScanRecord{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 500, Response: "older"}
+	newer := store.ScanRecord{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "newer"}
+	older := store.ScanRecord{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 500, Response: "older"}
 
 	if err := s.Upsert(ctx, newer); err != nil {
 		t.Fatalf("Upsert newer: %v", err)
@@ -108,8 +112,8 @@ func TestUpsert_SameTimestamp(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	first := store.ScanRecord{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "first"}
-	dup := store.ScanRecord{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "duplicate"}
+	first := store.ScanRecord{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "first"}
+	dup := store.ScanRecord{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "duplicate"}
 
 	if err := s.Upsert(ctx, first); err != nil {
 		t.Fatalf("Upsert first: %v", err)
@@ -146,9 +150,9 @@ func TestUpsert_IsolatesByKey(t *testing.T) {
 	ctx := context.Background()
 
 	records := []store.ScanRecord{
-		{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 100, Response: "http"},
-		{Ip: "1.1.1.1", Port: 22, Service: "SSH", LastScanned: 200, Response: "ssh"},
-		{Ip: "1.1.1.2", Port: 80, Service: "HTTP", LastScanned: 300, Response: "http2"},
+		{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 100, Response: "http"},
+		{IP: "1.1.1.1", Port: 22, Service: "SSH", LastScanned: 200, Response: "ssh"},
+		{IP: "1.1.1.2", Port: 80, Service: "HTTP", LastScanned: 300, Response: "http2"},
 	}
 
 	for _, r := range records {
@@ -158,15 +162,15 @@ func TestUpsert_IsolatesByKey(t *testing.T) {
 	}
 
 	for _, want := range records {
-		got, err := s.Get(ctx, want.Ip, want.Port, want.Service)
+		got, err := s.Get(ctx, want.IP, want.Port, want.Service)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
 		if got == nil {
-			t.Fatalf("expected record for %s:%d/%s, got nil", want.Ip, want.Port, want.Service)
+			t.Fatalf("expected record for %s:%d/%s, got nil", want.IP, want.Port, want.Service)
 		}
 		if got.Response != want.Response {
-			t.Errorf("Response for %s:%d/%s: got %q, want %q", want.Ip, want.Port, want.Service, got.Response, want.Response)
+			t.Errorf("Response for %s:%d/%s: got %q, want %q", want.IP, want.Port, want.Service, got.Response, want.Response)
 		}
 	}
 }
@@ -186,7 +190,7 @@ func TestUpsert_Concurrent(t *testing.T) {
 		go func(ts int64) {
 			defer wg.Done()
 			_ = s.Upsert(ctx, store.ScanRecord{
-				Ip:          "1.1.1.1",
+				IP:          "1.1.1.1",
 				Port:        80,
 				Service:     "HTTP",
 				LastScanned: ts,

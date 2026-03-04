@@ -54,11 +54,19 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	// important when multiple goroutines (or horizontally-scaled replicas on a
 	// shared volume) access the same file simultaneously.
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		errClose := db.Close()
+		if errClose != nil {
+			return nil, fmt.Errorf("create schema: %v, close db: %v", err, errClose)
+		}
 		return nil, fmt.Errorf("set WAL mode: %w", err)
 	}
 
 	// Prevent "database is locked" errors when a writer holds the lock.
 	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+		errClose := db.Close()
+		if errClose != nil {
+			return nil, fmt.Errorf("create schema: %v, close db: %v", err, errClose)
+		}
 		return nil, fmt.Errorf("set busy timeout: %w", err)
 	}
 
@@ -68,7 +76,10 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	db.SetMaxOpenConns(1)
 
 	if _, err := db.Exec(createTableSQL); err != nil {
-		db.Close()
+		errClose := db.Close()
+		if errClose != nil {
+			return nil, fmt.Errorf("create schema: %v, close db: %v", err, errClose)
+		}
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 
@@ -81,7 +92,7 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 // arbitrarily out-of-order messages.
 func (s *SQLiteStore) Upsert(ctx context.Context, record ScanRecord) error {
 	_, err := s.db.ExecContext(ctx, upsertSQL,
-		record.Ip,
+		record.IP,
 		record.Port,
 		record.Service,
 		record.LastScanned,
@@ -98,7 +109,7 @@ func (s *SQLiteStore) Upsert(ctx context.Context, record ScanRecord) error {
 func (s *SQLiteStore) Get(ctx context.Context, ip string, port uint32, service string) (*ScanRecord, error) {
 	row := s.db.QueryRowContext(ctx, getSQL, ip, port, service)
 	r := &ScanRecord{}
-	err := row.Scan(&r.Ip, &r.Port, &r.Service, &r.LastScanned, &r.Response)
+	err := row.Scan(&r.IP, &r.Port, &r.Service, &r.LastScanned, &r.Response)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

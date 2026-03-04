@@ -2,9 +2,9 @@ package store
 
 import "context"
 
-// ScanRecord holds the latest observed state of a unique (ip, port, service) tuple.
+// ScanRecord holds the latest observed state of a unique (IP, port, service) tuple.
 type ScanRecord struct {
-	Ip          string
+	IP          string
 	Port        uint32
 	Service     string
 	LastScanned int64  // Unix timestamp of the most recent scan seen

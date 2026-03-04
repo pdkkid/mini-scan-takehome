@@ -29,7 +29,7 @@ func (m *MemoryStore) key(ip string, port uint32, service string) string {
 func (m *MemoryStore) Upsert(_ context.Context, r ScanRecord) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	k := m.key(r.Ip, r.Port, r.Service)
+	k := m.key(r.IP, r.Port, r.Service)
 	if existing, ok := m.records[k]; !ok || r.LastScanned > existing.LastScanned {
 		m.records[k] = r
 	}

@@ -20,7 +20,7 @@ func runStoreSuite(t *testing.T, newStore func(t *testing.T) store.Store) {
 		s := newStore(t)
 		ctx := context.Background()
 
-		rec := store.ScanRecord{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "hello"}
+		rec := store.ScanRecord{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "hello"}
 		if err := s.Upsert(ctx, rec); err != nil {
 			t.Fatalf("Upsert: %v", err)
 		}
@@ -40,8 +40,8 @@ func runStoreSuite(t *testing.T, newStore func(t *testing.T) store.Store) {
 		s := newStore(t)
 		ctx := context.Background()
 
-		_ = s.Upsert(ctx, store.ScanRecord{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 500, Response: "old"})
-		_ = s.Upsert(ctx, store.ScanRecord{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "new"})
+		_ = s.Upsert(ctx, store.ScanRecord{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 500, Response: "old"})
+		_ = s.Upsert(ctx, store.ScanRecord{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "new"})
 
 		got, _ := s.Get(ctx, "1.1.1.1", 80, "HTTP")
 		if got == nil || got.Response != "new" || got.LastScanned != 1000 {
@@ -53,8 +53,8 @@ func runStoreSuite(t *testing.T, newStore func(t *testing.T) store.Store) {
 		s := newStore(t)
 		ctx := context.Background()
 
-		_ = s.Upsert(ctx, store.ScanRecord{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "newer"})
-		_ = s.Upsert(ctx, store.ScanRecord{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 500, Response: "older"})
+		_ = s.Upsert(ctx, store.ScanRecord{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "newer"})
+		_ = s.Upsert(ctx, store.ScanRecord{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 500, Response: "older"})
 
 		got, _ := s.Get(ctx, "1.1.1.1", 80, "HTTP")
 		if got == nil || got.Response != "newer" || got.LastScanned != 1000 {
@@ -66,8 +66,8 @@ func runStoreSuite(t *testing.T, newStore func(t *testing.T) store.Store) {
 		s := newStore(t)
 		ctx := context.Background()
 
-		_ = s.Upsert(ctx, store.ScanRecord{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "first"})
-		_ = s.Upsert(ctx, store.ScanRecord{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "duplicate"})
+		_ = s.Upsert(ctx, store.ScanRecord{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "first"})
+		_ = s.Upsert(ctx, store.ScanRecord{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 1000, Response: "duplicate"})
 
 		got, _ := s.Get(ctx, "1.1.1.1", 80, "HTTP")
 		if got == nil || got.Response != "first" {
@@ -93,9 +93,9 @@ func runStoreSuite(t *testing.T, newStore func(t *testing.T) store.Store) {
 		ctx := context.Background()
 
 		records := []store.ScanRecord{
-			{Ip: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 100, Response: "http"},
-			{Ip: "1.1.1.1", Port: 22, Service: "SSH", LastScanned: 200, Response: "ssh"},
-			{Ip: "1.1.1.2", Port: 80, Service: "HTTP", LastScanned: 300, Response: "http2"},
+			{IP: "1.1.1.1", Port: 80, Service: "HTTP", LastScanned: 100, Response: "http"},
+			{IP: "1.1.1.1", Port: 22, Service: "SSH", LastScanned: 200, Response: "ssh"},
+			{IP: "1.1.1.2", Port: 80, Service: "HTTP", LastScanned: 300, Response: "http2"},
 		}
 		for _, r := range records {
 			if err := s.Upsert(ctx, r); err != nil {
@@ -103,10 +103,10 @@ func runStoreSuite(t *testing.T, newStore func(t *testing.T) store.Store) {
 			}
 		}
 		for _, want := range records {
-			got, err := s.Get(ctx, want.Ip, want.Port, want.Service)
+			got, err := s.Get(ctx, want.IP, want.Port, want.Service)
 			if err != nil || got == nil || got.Response != want.Response {
 				t.Errorf("key %s:%d/%s: got %+v, err %v, want Response=%s",
-					want.Ip, want.Port, want.Service, got, err, want.Response)
+					want.IP, want.Port, want.Service, got, err, want.Response)
 			}
 		}
 	})
@@ -130,7 +130,7 @@ func runStoreSuite(t *testing.T, newStore func(t *testing.T) store.Store) {
 			go func(ts int64) {
 				defer wg.Done()
 				_ = s.Upsert(ctx, store.ScanRecord{
-					Ip: "1.1.1.1", Port: 80, Service: "HTTP",
+					IP: "1.1.1.1", Port: 80, Service: "HTTP",
 					LastScanned: ts,
 					Response:    fmt.Sprintf("response-%d", ts),
 				})
@@ -149,7 +149,11 @@ func runStoreSuite(t *testing.T, newStore func(t *testing.T) store.Store) {
 func TestMemoryStore(t *testing.T) {
 	runStoreSuite(t, func(t *testing.T) store.Store {
 		s := store.NewMemoryStore()
-		t.Cleanup(func() { s.Close() })
+		t.Cleanup(func() {
+			if err := s.Close(); err != nil {
+				t.Errorf("failed to close store: %v", err)
+			}
+		})
 		return s
 	})
 }
@@ -162,7 +166,11 @@ func TestSQLiteStore_Suite(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSQLiteStore: %v", err)
 		}
-		t.Cleanup(func() { s.Close() })
+		t.Cleanup(func() {
+			if err := s.Close(); err != nil {
+				t.Errorf("failed to close store: %v", err)
+			}
+		})
 		return s
 	})
 }

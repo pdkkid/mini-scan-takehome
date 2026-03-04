@@ -32,11 +32,11 @@ func main() {
 		Level: slog.LevelInfo,
 	})))
 
-	projectID      := flag.String("project", "test-project", "GCP project ID")
-	subID          := flag.String("subscription", "scan-sub", "Pub/Sub subscription ID")
-	dbPath         := flag.String("db", "/data/scans.db", "Path to SQLite database file")
+	projectID := flag.String("project", "test-project", "GCP project ID")
+	subID := flag.String("subscription", "scan-sub", "Pub/Sub subscription ID")
+	dbPath := flag.String("db", "/data/scans.db", "Path to SQLite database file")
 	maxOutstanding := flag.Int("concurrency", 10, "Max outstanding messages per pull")
-	metricsAddr    := flag.String("metrics-addr", ":8080", "Address for the /metrics and /healthz HTTP server")
+	metricsAddr := flag.String("metrics-addr", ":8080", "Address for the /metrics and /healthz HTTP server")
 	flag.Parse()
 
 	// Allow the project ID to be overridden via environment variable, matching
@@ -60,7 +60,11 @@ func main() {
 		slog.Error("failed to init store", "error", err)
 		os.Exit(1)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			slog.Error("failed to close store", "error", err)
+		}
+	}()
 
 	// When PUBSUB_EMULATOR_HOST is set in the environment, the Pub/Sub client
 	// automatically connects to the local emulator — no code change required.
@@ -69,7 +73,11 @@ func main() {
 		slog.Error("failed to create pubsub client", "error", err)
 		os.Exit(1)
 	}
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			slog.Error("failed to close pubsub client", "error", err)
+		}
+	}()
 
 	sub := client.Subscription(*subID)
 	sub.ReceiveSettings.MaxOutstandingMessages = *maxOutstanding
