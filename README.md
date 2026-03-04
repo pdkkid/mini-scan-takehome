@@ -165,21 +165,16 @@ A `Makefile` provides shortcuts that mirror the CI jobs exactly:
 | `make up` | `tilt up` |
 | `make down` | `tilt down` |
 
-`make lint` requires [golangci-lint](https://golangci-lint.run/usage/install/) to be installed locally. The linter config lives in `.golangci.yml`.
+`make lint` requires [golangci-lint](https://golangci-lint.run/docs/welcome/install/local/) to be installed locally. `brew install golangci-lint` The linter config lives in `.golangci.yml`.
 
 ### Kubernetes Development
 
 The project can also run on a local Kubernetes cluster using [Tilt](https://tilt.dev/).
 
 **Prerequisites:**
+
 - Docker Desktop with Kubernetes enabled (Settings → Kubernetes → Enable Kubernetes)
 - [Tilt](https://docs.tilt.dev/install.html) installed (`brew install tilt-dev/tap/tilt`)
-
-**Start the stack:**
-
-```bash
-tilt up       # or: make up
-```
 
 Tilt builds both container images from the existing Dockerfiles, deploys all Kubernetes manifests, and opens a browser UI showing real-time status for every resource. File changes trigger automatic image rebuilds and pod restarts.
 
@@ -271,7 +266,7 @@ The dashboard has four panels:
 | **Processing Latency** | p50 / p95 / p99 end-to-end handling time |
 | **Message Rate by Status** | Stacked view of all three status labels over time |
 
-The Prometheus UI is also available at **http://localhost:9090** for ad-hoc queries.
+The Prometheus UI is also available at **[http://localhost:9090](http://localhost:9090)** for ad-hoc queries.
 
 ### CI Pipeline
 
