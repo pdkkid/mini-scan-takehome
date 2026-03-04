@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"cloud.google.com/go/pubsub"
 	"github.com/censys/scan-takehome/pkg/scanning"
@@ -44,15 +44,20 @@ func New(s store.Store) *Processor {
 //   - Transient error → Nack (redeliver; e.g. temporary store outage)
 func (p *Processor) HandleMessage(ctx context.Context, msg *pubsub.Message) {
 	err := p.Process(ctx, msg.Data)
-	if err == nil {
+	switch {
+	case err == nil:
 		msg.Ack()
-		return
-	}
-	if errors.Is(err, ErrPermanent) {
-		log.Printf("permanent error — acking (dropping) message id=%s: %v", msg.ID, err)
+	case errors.Is(err, ErrPermanent):
+		slog.WarnContext(ctx, "dropping message (permanent error)",
+			"msg_id", msg.ID,
+			"error", err,
+		)
 		msg.Ack()
-	} else {
-		log.Printf("transient error — nacking for redelivery message id=%s: %v", msg.ID, err)
+	default:
+		slog.WarnContext(ctx, "nacking message (transient error)",
+			"msg_id", msg.ID,
+			"error", err,
+		)
 		msg.Nack()
 	}
 }

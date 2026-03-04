@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,9 +14,15 @@ import (
 )
 
 func main() {
-	projectID    := flag.String("project", "test-project", "GCP project ID")
-	subID        := flag.String("subscription", "scan-sub", "Pub/Sub subscription ID")
-	dbPath       := flag.String("db", "/data/scans.db", "Path to SQLite database file")
+	// JSON-structured logging so every field is machine-readable by log
+	// aggregators (Datadog, Cloud Logging, etc.) without custom parsers.
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})))
+
+	projectID      := flag.String("project", "test-project", "GCP project ID")
+	subID          := flag.String("subscription", "scan-sub", "Pub/Sub subscription ID")
+	dbPath         := flag.String("db", "/data/scans.db", "Path to SQLite database file")
 	maxOutstanding := flag.Int("concurrency", 10, "Max outstanding messages per pull")
 	flag.Parse()
 
@@ -33,7 +39,8 @@ func main() {
 
 	s, err := store.NewSQLiteStore(*dbPath)
 	if err != nil {
-		log.Fatalf("init store: %v", err)
+		slog.Error("failed to init store", "error", err)
+		os.Exit(1)
 	}
 	defer s.Close()
 
@@ -41,7 +48,8 @@ func main() {
 	// automatically connects to the local emulator — no code change required.
 	client, err := pubsub.NewClient(ctx, *projectID)
 	if err != nil {
-		log.Fatalf("pubsub client: %v", err)
+		slog.Error("failed to create pubsub client", "error", err)
+		os.Exit(1)
 	}
 	defer client.Close()
 
@@ -50,15 +58,20 @@ func main() {
 
 	proc := processor.New(s)
 
-	log.Printf("processor started — project=%s subscription=%s db=%s concurrency=%d",
-		*projectID, *subID, *dbPath, *maxOutstanding)
+	slog.Info("processor started",
+		"project", *projectID,
+		"subscription", *subID,
+		"db", *dbPath,
+		"concurrency", *maxOutstanding,
+	)
 
 	// Receive blocks until ctx is cancelled or a non-retryable error occurs.
 	// Each message is dispatched to proc.HandleMessage in its own goroutine;
 	// Ack/Nack is the processor's responsibility.
 	if err := sub.Receive(ctx, proc.HandleMessage); err != nil && ctx.Err() == nil {
-		log.Fatalf("receive: %v", err)
+		slog.Error("receive error", "error", err)
+		os.Exit(1)
 	}
 
-	log.Println("processor shut down cleanly")
+	slog.Info("processor shut down cleanly")
 }

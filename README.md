@@ -92,6 +92,10 @@ When `encoding/json` unmarshals into `scanning.Scan`, the `Data interface{}` fie
 
 Multiple processor replicas can consume from the same Pub/Sub subscription — Pub/Sub load-balances automatically. The atomic conditional upsert ensures correctness when two replicas race to write the same `(ip, port, service)`. SQLite is configured with WAL journal mode and a 5-second busy timeout to reduce lock contention on a shared volume. To scale beyond a single host, swap `SQLiteStore` for a networked database — a one-file change.
 
+**Structured logging**
+
+The processor uses Go's stdlib `log/slog` package (introduced in Go 1.21) with a JSON handler, so every log line is a machine-readable JSON object. Each warning includes the Pub/Sub `msg_id` and the full `error` as discrete fields, making it straightforward to filter and alert on error classes in any log aggregation system (Datadog, Cloud Logging, etc.).
+
 **Graceful shutdown**
 
 `signal.NotifyContext` cancels the root context on `SIGINT`/`SIGTERM`, causing `sub.Receive` to drain all in-flight `HandleMessage` calls before returning.
