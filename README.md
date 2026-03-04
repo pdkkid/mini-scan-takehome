@@ -179,3 +179,23 @@ Example output:
 scan_message_processing_duration_seconds_count 42
 scan_messages_processed_total{status="ok"} 42
 ```
+
+### Grafana Dashboard
+
+The stack includes Prometheus and Grafana with a pre-built dashboard — no manual setup required.
+
+Once `docker compose up --build` is running:
+
+1. Open **http://localhost:3000** and log in with `admin` / `admin`
+2. Navigate to **Dashboards → Scan Processor**
+
+The dashboard has four panels:
+
+| Panel | What it shows |
+|-------|---------------|
+| **Message Throughput** | Successful messages processed per second |
+| **Error Rate** | Permanent (bad messages) and transient (store errors) error rates |
+| **Processing Latency** | p50 / p95 / p99 end-to-end handling time |
+| **Message Rate by Status** | Stacked view of all three status labels over time |
+
+The Prometheus UI is also available at **http://localhost:9090** for ad-hoc queries.
