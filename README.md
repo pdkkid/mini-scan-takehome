@@ -129,6 +129,21 @@ pkg/metrics/
 
 ---
 
+## Development
+
+A `Makefile` provides shortcuts that mirror the CI jobs exactly:
+
+| Command | What it runs |
+|---------|-------------|
+| `make test` | `go test -race ./...` |
+| `make lint` | `golangci-lint run ./...` |
+| `make build` | `CGO_ENABLED=0 go build` for both binaries |
+| `make tidy` | `go mod tidy && go mod verify` |
+
+`make lint` requires [golangci-lint](https://golangci-lint.run/usage/install/) to be installed locally. The linter config lives in `.golangci.yml`.
+
+---
+
 ## Testing
 
 ### Automated tests
@@ -199,3 +214,16 @@ The dashboard has four panels:
 | **Message Rate by Status** | Stacked view of all three status labels over time |
 
 The Prometheus UI is also available at **http://localhost:9090** for ad-hoc queries.
+
+### CI Pipeline
+
+The repo ships a GitHub Actions workflow (`.github/workflows/ci.yml`) that runs on every push and pull request:
+
+| Job | What it does |
+|-----|-------------|
+| **lint** | `go mod tidy` drift check + golangci-lint |
+| **test** | `go test -race ./...` + per-package coverage summary |
+| **build** | Compiles both binaries and builds both Docker images |
+| **integration** | Starts the full `docker compose` stack and asserts `/healthz` returns `{"status":"ok"}` before tearing down |
+
+The `integration` job depends on `build` passing, so the live smoke test only runs against images that are known to compile.
