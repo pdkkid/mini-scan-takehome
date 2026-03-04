@@ -1,0 +1,53 @@
+# One-shot Job that creates the Pub/Sub topic and subscription.
+# Mirrors the docker-compose mk-topic + mk-subscription services.
+# The retry loop handles the race where the Job starts before the emulator
+# is fully ready — defense-in-depth alongside Tilt's resource_deps ordering.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pubsub-init
+  labels:
+    app: pubsub-init
+    component: infrastructure
+spec:
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        app: pubsub-init
+        component: infrastructure
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: pubsub-init
+          image: curlimages/curl:8.10.1
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for pubsub emulator..."
+              until curl -sf http://pubsub:8085 >/dev/null 2>&1; do
+                echo "  emulator not ready, retrying in 2s..."
+                sleep 2
+              done
+              echo "Emulator is ready."
+
+              echo "Creating topic..."
+              curl -sf -X PUT http://pubsub:8085/v1/projects/test-project/topics/scan-topic
+              echo ""
+
+              echo "Creating subscription..."
+              curl -sf -X PUT \
+                -H "Content-Type: application/json" \
+                -d '{"topic":"projects/test-project/topics/scan-topic"}' \
+                http://pubsub:8085/v1/projects/test-project/subscriptions/scan-sub
+              echo ""
+
+              echo "Pubsub init complete."
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi

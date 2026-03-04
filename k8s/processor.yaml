@@ -1,0 +1,92 @@
+# Processor — consumes scan results from Pub/Sub and persists them to SQLite.
+# Exposes /metrics (Prometheus) and /healthz (readiness + liveness) on port 8080.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processor
+  labels:
+    app: processor
+    component: pipeline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: processor
+  template:
+    metadata:
+      labels:
+        app: processor
+        component: pipeline
+      # Standard Prometheus annotations for service-discovery-based scraping.
+      # Even though we use static config here, including these makes the
+      # manifest production-ready for clusters running the Prometheus Operator.
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: processor
+          image: processor
+          env:
+            - name: PUBSUB_EMULATOR_HOST
+              value: "pubsub:8085"
+            - name: PUBSUB_PROJECT_ID
+              value: "test-project"
+          ports:
+            - containerPort: 8080
+              name: metrics
+              protocol: TCP
+          # Readiness: the processor is ready when both the SQLite store and
+          # the Pub/Sub subscription are reachable. /healthz checks both.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Liveness: same endpoint, but with a longer interval and higher
+          # failure threshold. A transient pubsub blip should not restart the pod.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        # emptyDir is appropriate for local development — data does not survive
+        # pod restarts, but the scanner continuously generates new scan results.
+        # In production, replace with a PersistentVolumeClaim or swap SQLiteStore
+        # for a networked database (Postgres, CockroachDB, etc.).
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: processor
+  labels:
+    app: processor
+    component: pipeline
+spec:
+  selector:
+    app: processor
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: metrics
+      protocol: TCP

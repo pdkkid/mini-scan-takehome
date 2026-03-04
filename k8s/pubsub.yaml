@@ -1,0 +1,71 @@
+# Pub/Sub emulator — the message broker for the scan pipeline.
+# The Service name "pubsub" matches the PUBSUB_EMULATOR_HOST env var used by
+# both scanner and processor (pubsub:8085), mirroring the docker-compose setup.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pubsub
+  labels:
+    app: pubsub
+    component: infrastructure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pubsub
+  template:
+    metadata:
+      labels:
+        app: pubsub
+        component: infrastructure
+    spec:
+      containers:
+        - name: pubsub
+          image: gcr.io/google.com/cloudsdktool/cloud-sdk:316.0.0-emulators
+          command:
+            - gcloud
+            - beta
+            - emulators
+            - pubsub
+            - start
+            - --project=test-project
+            - --host-port=0.0.0.0:8085
+          ports:
+            - containerPort: 8085
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8085
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8085
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pubsub
+  labels:
+    app: pubsub
+    component: infrastructure
+spec:
+  selector:
+    app: pubsub
+  ports:
+    - port: 8085
+      targetPort: 8085
+      protocol: TCP

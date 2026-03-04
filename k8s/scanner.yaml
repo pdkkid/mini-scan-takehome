@@ -1,0 +1,37 @@
+# Scanner — publishes simulated scan results to the Pub/Sub topic.
+# No Service is needed because the scanner exposes no ports; it is a
+# pure producer. The image placeholder "scanner" is replaced by Tilt
+# with the locally-built image from cmd/scanner/Dockerfile.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scanner
+  labels:
+    app: scanner
+    component: pipeline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scanner
+  template:
+    metadata:
+      labels:
+        app: scanner
+        component: pipeline
+    spec:
+      containers:
+        - name: scanner
+          image: scanner
+          env:
+            - name: PUBSUB_EMULATOR_HOST
+              value: "pubsub:8085"
+            - name: PUBSUB_PROJECT_ID
+              value: "test-project"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
