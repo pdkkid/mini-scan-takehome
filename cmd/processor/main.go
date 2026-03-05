@@ -14,6 +14,7 @@ import (
 	"cloud.google.com/go/pubsub"
 	"github.com/censys/scan-takehome/pkg/metrics"
 	"github.com/censys/scan-takehome/pkg/processor"
+	"github.com/censys/scan-takehome/pkg/publish"
 	"github.com/censys/scan-takehome/pkg/store"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -34,6 +35,7 @@ func main() {
 
 	projectID := flag.String("project", "test-project", "GCP project ID")
 	subID := flag.String("subscription", "scan-sub", "Pub/Sub subscription ID")
+	dlqTopicID := flag.String("dlq-topic", "scan-dlq", "Pub/Sub topic ID for the dead letter queue")
 	storeType := flag.String("store", "sqlite", "Store backend: sqlite or postgres")
 	dbPath := flag.String("db", "/data/scans.db", "Path to SQLite database file")
 	postgresURL := flag.String("postgres-url", "", "PostgreSQL connection string (required when -store=postgres)")
@@ -162,10 +164,17 @@ func main() {
 
 	proc := processor.NewWithRecorder(s, rec)
 
+	// Dead letter queue — permanent-error messages are forwarded here instead of
+	// being silently dropped. The DLQ topic is always configured; if the topic
+	// doesn't exist yet, publish will fail and the message is Nack'ed with a log.
+	dlqTopic := client.Topic(*dlqTopicID)
+	proc.SetDLQ(publish.NewTopicPublisher(dlqTopic))
+
 	slog.Info("processor started",
 		"project", *projectID,
 		"subscription", *subID,
 		"store", *storeType,
+		"dlq_topic", dlqTopicID,
 		"concurrency", *maxOutstanding,
 	)
 

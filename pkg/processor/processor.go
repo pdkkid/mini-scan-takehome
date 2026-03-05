@@ -10,14 +10,13 @@ import (
 
 	"cloud.google.com/go/pubsub"
 	"github.com/censys/scan-takehome/pkg/metrics"
+	"github.com/censys/scan-takehome/pkg/publish"
 	"github.com/censys/scan-takehome/pkg/scanning"
 	"github.com/censys/scan-takehome/pkg/store"
 )
 
 // ErrPermanent is a sentinel used to classify errors that should not be
-// retried. When a message produces a permanent error, the processor Acks it
-// (dropping it from the subscription) rather than Nacking, which would cause
-// infinite redelivery. Permanent errors indicate the message itself is the
+// retried. Permanent errors indicate the message itself is the
 // problem — e.g. malformed JSON or an unknown data version — and will never
 // succeed regardless of how many times it is retried.
 var ErrPermanent = errors.New("permanent processing error")
@@ -31,6 +30,7 @@ func permanent(err error) error {
 // Processor subscribes to a Pub/Sub subscription and persists scan results.
 type Processor struct {
 	store    store.Store
+	dlq      publish.Publisher // nil-safe; when nil, permanent errors are dropped
 	recorder *metrics.Recorder // nil-safe; omit in tests
 }
 
@@ -47,9 +47,9 @@ func NewWithRecorder(s store.Store, r *metrics.Recorder) *Processor {
 // HandleMessage is a pubsub.MessageHandler that routes messages through
 // Process and dispatches Ack or Nack based on the error class:
 //
-//   - No error        → Ack  (status="ok")
-//   - Permanent error → Ack  (status="permanent"; drop — retrying won't help)
-//   - Transient error → Nack (status="transient"; redeliver when store recovers)
+//   - No error        → Ack       (status="ok")
+//   - Permanent error → Nack/Ack  (status="permanent"; publish to DQL and Ack, if publishing fails, Nack)
+//   - Transient error → Nack      (status="transient"; redeliver when store recovers)
 func (p *Processor) HandleMessage(ctx context.Context, msg *pubsub.Message) {
 	start := time.Now()
 	err := p.Process(ctx, msg.Data)
@@ -58,18 +58,46 @@ func (p *Processor) HandleMessage(ctx context.Context, msg *pubsub.Message) {
 	switch {
 	case err == nil:
 		// Log structured events for successful processing, including the message ID - mainly to verify working in logs
-		slog.InfoContext(ctx, "message processed successfully",
-			"msg_id", msg.ID,
-			"processing_time_ms", time.Since(start).Milliseconds(),
-		)
+		// slog.InfoContext(ctx, "message processed successfully",
+		// 	"msg_id", msg.ID,
+		// 	"processing_time_ms", time.Since(start).Milliseconds(),
+		// )
 		msg.Ack()
 		status = "ok"
 	case errors.Is(err, ErrPermanent):
-		slog.WarnContext(ctx, "dropping message (permanent error)",
+		slog.WarnContext(ctx, "permanent processing error",
 			"msg_id", msg.ID,
 			"error", err,
 		)
-		msg.Ack()
+		// Forward the original message to the dead letter queue if configured.
+		if p.dlq != nil {
+			dlqMsg := &pubsub.Message{
+				Data: msg.Data,
+				Attributes: map[string]string{
+					"original_msg_id":       msg.ID,
+					"original_publish_time": msg.PublishTime.Format(time.RFC3339Nano),
+					"error":                 err.Error(),
+				},
+			}
+			dlqErr := p.dlq.Publish(ctx, dlqMsg)
+			if dlqErr != nil {
+				slog.ErrorContext(ctx, "failed to publish to DLQ",
+					"msg_id", msg.ID,
+					"dlq_error", dlqErr,
+				)
+			} else {
+				slog.InfoContext(ctx, "published message to DLQ",
+					"msg_id", msg.ID,
+				)
+				// Increment DLQPublished metric only on successful publish to avoid inflating the metric with failed attempts
+				if p.recorder != nil {
+					p.recorder.DLQPublished.Inc()
+				}
+				// Ack the original message only if DLQ publish succeeds; otherwise Nack to trigger redelivery and avoid silent loss
+				msg.Ack()
+			}
+		}
+		msg.Nack() // Nack if DLQ publish fails to trigger redelivery and avoid silent message loss
 		status = "permanent"
 	default:
 		slog.WarnContext(ctx, "nacking message (transient error)",
@@ -111,6 +139,14 @@ func (p *Processor) Process(ctx context.Context, data []byte) error {
 		LastScanned: scan.Timestamp,
 		Response:    response,
 	})
+}
+
+// SetDLQ configures the dead letter queue publisher. When set, messages that
+// produce permanent errors are forwarded to the DLQ instead of being nacked.
+// The original message bytes are preserved as-is; error metadata is
+// added as Pub/Sub message attributes.
+func (p *Processor) SetDLQ(pub publish.Publisher) {
+	p.dlq = pub
 }
 
 // extractResponse decodes the service response string from either V1 or V2

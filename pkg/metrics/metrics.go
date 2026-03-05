@@ -13,6 +13,10 @@ type Recorder struct {
 
 	// ProcessingDuration observes end-to-end message handling latency in seconds.
 	ProcessingDuration prometheus.Histogram
+
+	// DLQPublished counts messages successfully published to the dead letter queue.
+	// Compare with MessagesProcessed{status="permanent"} to detect DLQ publish failures.
+	DLQPublished prometheus.Counter
 }
 
 // NewRecorder registers and returns a Recorder using the given registerer.
@@ -34,7 +38,13 @@ func NewRecorder(reg prometheus.Registerer) *Recorder {
 				Buckets: prometheus.DefBuckets,
 			},
 		),
+		DLQPublished: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: "scan_dlq_published_total",
+				Help: "Total messages successfully published to the dead letter queue.",
+			},
+		),
 	}
-	reg.MustRegister(r.MessagesProcessed, r.ProcessingDuration)
+	reg.MustRegister(r.MessagesProcessed, r.ProcessingDuration, r.DLQPublished)
 	return r
 }

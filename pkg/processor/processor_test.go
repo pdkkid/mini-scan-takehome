@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 
 	"cloud.google.com/go/pubsub"
@@ -210,5 +211,145 @@ func TestProcess_TransientStoreError(t *testing.T) {
 	}
 	if errors.Is(err, processor.ErrPermanent) {
 		t.Errorf("store error should be transient (not permanent), got: %v", err)
+	}
+}
+
+// ── DLQ test doubles ─────────────────────────────────────────────────────────
+
+// fakeDLQ records messages published to the dead letter queue.
+type fakeDLQ struct {
+	mu       sync.Mutex
+	messages []*pubsub.Message
+}
+
+func (f *fakeDLQ) Publish(_ context.Context, msg *pubsub.Message) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.messages = append(f.messages, msg)
+	return nil
+}
+
+// errDLQ simulates a DLQ that always fails to publish.
+type errDLQ struct{}
+
+func (e *errDLQ) Publish(_ context.Context, _ *pubsub.Message) error {
+	return errors.New("dlq unavailable")
+}
+
+// ── DLQ tests ────────────────────────────────────────────────────────────────
+
+// TestHandleMessage_PermanentError_PublishedToDLQ verifies that when a message
+// produces a permanent error, the original bytes are forwarded to the DLQ with
+// error metadata in the message attributes.
+func TestHandleMessage_PermanentError_PublishedToDLQ(t *testing.T) {
+	ms := store.NewMemoryStore()
+	p := processor.New(ms)
+	dlq := &fakeDLQ{}
+	p.SetDLQ(dlq)
+	ctx := context.Background()
+
+	badData := []byte("not valid json {")
+	msg := &pubsub.Message{ID: "dlq-1", Data: badData}
+	p.HandleMessage(ctx, msg)
+
+	dlq.mu.Lock()
+	defer dlq.mu.Unlock()
+
+	if len(dlq.messages) != 1 {
+		t.Fatalf("expected 1 DLQ message, got %d", len(dlq.messages))
+	}
+	dlqMsg := dlq.messages[0]
+
+	// The DLQ message body should be the original raw bytes, untouched.
+	if string(dlqMsg.Data) != string(badData) {
+		t.Errorf("DLQ Data: got %q, want %q", string(dlqMsg.Data), string(badData))
+	}
+
+	// Attributes should contain the original message ID and the error.
+	if dlqMsg.Attributes["original_msg_id"] != "dlq-1" {
+		t.Errorf("original_msg_id: got %q, want %q", dlqMsg.Attributes["original_msg_id"], "dlq-1")
+	}
+	if dlqMsg.Attributes["error"] == "" {
+		t.Error("expected non-empty error attribute")
+	}
+}
+
+// TestHandleMessage_PermanentError_DLQFailure_StillProcesses verifies that a
+// DLQ publish failure does not cause a panic or prevent the message from being
+// handled. The message is still Acked (not Nacked) to avoid infinite redelivery.
+func TestHandleMessage_PermanentError_DLQFailure_StillProcesses(t *testing.T) {
+	ms := store.NewMemoryStore()
+	p := processor.New(ms)
+	p.SetDLQ(&errDLQ{})
+	ctx := context.Background()
+
+	msg := &pubsub.Message{ID: "dlq-2", Data: []byte("bad json")}
+	// Should not panic even though the DLQ publish fails.
+	p.HandleMessage(ctx, msg)
+
+	// Nothing stored (permanent error), but no crash.
+	got, _ := ms.Get(ctx, "1.1.1.1", 80, "HTTP")
+	if got != nil {
+		t.Errorf("expected no record, got %+v", got)
+	}
+}
+
+// TestHandleMessage_TransientError_NotPublishedToDLQ verifies that transient
+// errors (e.g. store unavailable) do NOT produce DLQ messages. Only permanent
+// errors go to the DLQ; transient errors are Nacked for redelivery.
+func TestHandleMessage_TransientError_NotPublishedToDLQ(t *testing.T) {
+	p := processor.New(&errStore{})
+	dlq := &fakeDLQ{}
+	p.SetDLQ(dlq)
+	ctx := context.Background()
+
+	scan := &scanning.Scan{
+		Ip:          "1.1.1.1",
+		Port:        80,
+		Service:     "HTTP",
+		Timestamp:   6000,
+		DataVersion: scanning.V2,
+		Data:        &scanning.V2Data{ResponseStr: "hello"},
+	}
+	msg := &pubsub.Message{ID: "dlq-3", Data: makeMsgData(t, scan)}
+	p.HandleMessage(ctx, msg)
+
+	dlq.mu.Lock()
+	defer dlq.mu.Unlock()
+	if len(dlq.messages) != 0 {
+		t.Errorf("transient errors should not go to DLQ, got %d messages", len(dlq.messages))
+	}
+}
+
+// TestHandleMessage_Success_NotPublishedToDLQ verifies that successfully
+// processed messages are NOT forwarded to the DLQ.
+func TestHandleMessage_Success_NotPublishedToDLQ(t *testing.T) {
+	ms := store.NewMemoryStore()
+	p := processor.New(ms)
+	dlq := &fakeDLQ{}
+	p.SetDLQ(dlq)
+	ctx := context.Background()
+
+	scan := &scanning.Scan{
+		Ip:          "2.2.2.2",
+		Port:        443,
+		Service:     "HTTPS",
+		Timestamp:   7000,
+		DataVersion: scanning.V2,
+		Data:        &scanning.V2Data{ResponseStr: "ok"},
+	}
+	msg := &pubsub.Message{ID: "dlq-4", Data: makeMsgData(t, scan)}
+	p.HandleMessage(ctx, msg)
+
+	dlq.mu.Lock()
+	defer dlq.mu.Unlock()
+	if len(dlq.messages) != 0 {
+		t.Errorf("successful messages should not go to DLQ, got %d messages", len(dlq.messages))
+	}
+
+	// Verify the message was actually stored.
+	got, _ := ms.Get(ctx, "2.2.2.2", 443, "HTTPS")
+	if got == nil || got.Response != "ok" {
+		t.Errorf("expected stored record with Response=ok, got %+v", got)
 	}
 }
