@@ -1,7 +1,7 @@
 version: "2"
 
 linters:
-  # "standard" enables the baseline set: govet, errcheck, staticcheck
+  # standard enables the baseline set: govet, errcheck, staticcheck
   default: standard
   enable:
     - misspell    # catch typos in comments and string literals
@@ -13,12 +13,6 @@ linters:
       - pkg/scanning
 
 linters-settings:
-  gocritic:
-    # "diagnostic" catches real bugs; "style" is too opinionated for a team
-    # that hasn't aligned on a style guide yet.
-    enabled-tags:
-      - diagnostic
-
   nolintlint:
     # All //nolint directives must name the specific linter being suppressed
     # (e.g. //nolint:errcheck, not just //nolint). This prevents blanket
