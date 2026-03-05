@@ -37,7 +37,11 @@ k8s_resource(
     resource_deps=['pubsub'],
     labels=['infrastructure'],
 )
-k8s_resource('postgres', labels=['infrastructure'])
+k8s_resource(
+    'postgres',
+    port_forwards='5432:5432',
+    labels=['infrastructure'],
+)
 
 # Pipeline: scanner and processor both require the topic/subscription to exist.
 k8s_resource(
