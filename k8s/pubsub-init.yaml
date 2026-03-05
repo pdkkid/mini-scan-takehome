@@ -43,6 +43,17 @@ spec:
                 http://pubsub:8085/v1/projects/test-project/subscriptions/scan-sub
               echo ""
 
+              echo "Creating DLQ topic..."
+              curl -sf -X PUT http://pubsub:8085/v1/projects/test-project/topics/scan-dlq
+              echo ""
+
+              echo "Creating DLQ subscription..."
+              curl -sf -X PUT \
+                -H "Content-Type: application/json" \
+                -d '{"topic":"projects/test-project/topics/scan-dlq"}' \
+                http://pubsub:8085/v1/projects/test-project/subscriptions/scan-dlq-sub
+              echo ""
+
               echo "Pubsub init complete."
           resources:
             requests:

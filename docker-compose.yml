@@ -26,7 +26,23 @@ services:
     depends_on:
       mk-topic:
         condition: service_completed_successfully
-    command: PUT http://pubsub:8085/v1/projects/test-project/subscriptions/scan-sub topic=projects/test-project/topics/scan-topic --ignore-stdin 
+    command: PUT http://pubsub:8085/v1/projects/test-project/subscriptions/scan-sub topic=projects/test-project/topics/scan-topic --ignore-stdin
+
+  # Creates the dead letter queue topic
+  mk-dlq-topic:
+    image: alpine/httpie
+    depends_on:
+      pubsub:
+        condition: service_healthy
+    command: PUT http://pubsub:8085/v1/projects/test-project/topics/scan-dlq
+
+  # Creates a subscription for inspecting DLQ messages
+  mk-dlq-subscription:
+    image: alpine/httpie
+    depends_on:
+      mk-dlq-topic:
+        condition: service_completed_successfully
+    command: PUT http://pubsub:8085/v1/projects/test-project/subscriptions/scan-dlq-sub topic=projects/test-project/topics/scan-dlq --ignore-stdin
 
   # Runs the "scanner"
   scanner:
@@ -61,6 +77,8 @@ services:
   processor:
     depends_on:
       mk-subscription:
+        condition: service_completed_successfully
+      mk-dlq-topic:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy

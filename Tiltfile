@@ -31,7 +31,10 @@ k8s_yaml([
 
 # Infrastructure: the emulator and postgres must be ready before dependent
 # services start.
-k8s_resource('pubsub', labels=['infrastructure'])
+k8s_resource(
+    'pubsub',
+    port_forwards='8085:8085',
+    labels=['infrastructure'])
 k8s_resource(
     'pubsub-init',
     resource_deps=['pubsub'],
