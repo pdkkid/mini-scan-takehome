@@ -7,18 +7,17 @@ linters:
     - misspell    # catch typos in comments and string literals
     - unconvert   # flag unnecessary type conversions
     - nolintlint  # ensure //nolint directives are valid and not stale
+  settings:
+    nolintlint:
+       # All //nolint directives must name the specific linter being suppressed
+      # (e.g. //nolint:errcheck, not just //nolint). This prevents blanket
+      # suppressions that mask unrelated issues introduced later.
+      require-specific: true
+      allow-unused: false
   exclusions:
     paths:
       - cmd/scanner
       - pkg/scanning
-
-linters-settings:
-  nolintlint:
-    # All //nolint directives must name the specific linter being suppressed
-    # (e.g. //nolint:errcheck, not just //nolint). This prevents blanket
-    # suppressions that mask unrelated issues introduced later.
-    require-specific: true
-    allow-unused: false
 
 issues:
   # Report every instance of an issue, not just the first few.
