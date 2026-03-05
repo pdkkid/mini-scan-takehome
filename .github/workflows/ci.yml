@@ -16,7 +16,6 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
           cache: true
 
       # Catch go.mod / go.sum drift — a CI-only tidy check.
@@ -25,7 +24,7 @@ jobs:
 
       - uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v2.10.1
 
   # ── 2. Test ────────────────────────────────────────────────────────────────
   test:
