@@ -28,6 +28,7 @@ spec:
       containers:
         - name: processor
           image: processor
+          command: ["/app/processor"]
           args:
             - "-store"
             - "postgres"
