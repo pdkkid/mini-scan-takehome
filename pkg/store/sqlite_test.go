@@ -10,6 +10,23 @@ import (
 	"github.com/censys/scan-takehome/pkg/store"
 )
 
+// TestSQLiteStore_Suite runs the same behavioral suite against SQLiteStore,
+// confirming both implementations honour the Store contract identically.
+func TestSQLiteStore_Suite(t *testing.T) {
+	runStoreSuite(t, func(t *testing.T) store.Store {
+		s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatalf("NewSQLiteStore: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := s.Close(); err != nil {
+				t.Errorf("failed to close store: %v", err)
+			}
+		})
+		return s
+	})
+}
+
 func newTestStore(t *testing.T) *store.SQLiteStore {
 	t.Helper()
 	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "test.db"))

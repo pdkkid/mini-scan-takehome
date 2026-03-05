@@ -3,7 +3,6 @@ package store_test
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"sync"
 	"testing"
 
@@ -11,8 +10,7 @@ import (
 )
 
 // runStoreSuite executes the full Store behavioral contract against any
-// implementation. Both MemoryStore and SQLiteStore must satisfy these
-// invariants identically, making them safely interchangeable.
+// implementation.
 func runStoreSuite(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Helper()
 
@@ -149,23 +147,6 @@ func runStoreSuite(t *testing.T, newStore func(t *testing.T) store.Store) {
 func TestMemoryStore(t *testing.T) {
 	runStoreSuite(t, func(t *testing.T) store.Store {
 		s := store.NewMemoryStore()
-		t.Cleanup(func() {
-			if err := s.Close(); err != nil {
-				t.Errorf("failed to close store: %v", err)
-			}
-		})
-		return s
-	})
-}
-
-// TestSQLiteStore_Suite runs the same behavioral suite against SQLiteStore,
-// confirming both implementations honour the Store contract identically.
-func TestSQLiteStore_Suite(t *testing.T) {
-	runStoreSuite(t, func(t *testing.T) store.Store {
-		s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "test.db"))
-		if err != nil {
-			t.Fatalf("NewSQLiteStore: %v", err)
-		}
 		t.Cleanup(func() {
 			if err := s.Close(); err != nil {
 				t.Errorf("failed to close store: %v", err)
